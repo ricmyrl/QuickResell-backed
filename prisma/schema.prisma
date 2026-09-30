@@ -1,0 +1,146 @@
+generator client {
+  provider                = "prisma-client"
+  output                  = "../src/generated/prisma"
+  moduleFormat            = "esm"
+  generatedFileExtension  = "ts"
+  importFileExtension     = "ts"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ListingStatus {
+  ACTIVE
+  RESERVED
+  SOLD
+  REMOVED
+}
+
+enum AuctionRoomStatus {
+  ACTIVE
+  CLOSED
+}
+
+model User {
+  id                    String   @id @db.Uuid
+  email                 String?  @unique
+  displayName           String?
+  avatarUrl             String?
+  preferredDormOrCampus String?
+  budgetPreference      Float?
+  savedCategories       String[] @default([])
+  embedding             Json?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  posts                 Post[]
+  buyerConversations    Conversation[] @relation("ConversationBuyer")
+  sellerConversations   Conversation[] @relation("ConversationSeller")
+  sentMessages          Message[]
+  sellerAuctionRooms   AuctionRoom[] @relation("AuctionSeller")
+  wonAuctionRooms      AuctionRoom[] @relation("AuctionWinner")
+  bids                 Bid[]
+}
+
+model Category {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+  posts     Post[]
+}
+
+model Post {
+  id             String        @id @default(cuid())
+  sellerId       String        @db.Uuid
+  categoryId     String
+  title          String
+  description    String?
+  price          Float
+  originalPrice  Float?
+  locationCampus String?
+  embedding      Json?
+  status         ListingStatus @default(ACTIVE)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  user           User          @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  category       Category      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  images         ListingImage[]
+  conversations  Conversation[]
+  auctionRoom    AuctionRoom?
+
+  @@index([status, createdAt])
+  @@index([categoryId, status])
+  @@index([sellerId, status])
+}
+
+model ListingImage {
+  id        String   @id @default(cuid())
+  postId    String
+  url       String   @db.Text
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId, sortOrder])
+}
+
+model Conversation {
+  id        String    @id @default(cuid())
+  listingId String?
+  buyerId   String    @db.Uuid
+  sellerId  String    @db.Uuid
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  listing   Post?     @relation(fields: [listingId], references: [id], onDelete: SetNull)
+  buyer     User      @relation("ConversationBuyer", fields: [buyerId], references: [id], onDelete: Cascade)
+  seller    User      @relation("ConversationSeller", fields: [sellerId], references: [id], onDelete: Cascade)
+  messages  Message[]
+
+  @@unique([buyerId, sellerId, listingId])
+  @@index([buyerId, updatedAt])
+  @@index([sellerId, updatedAt])
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  senderId       String       @db.Uuid
+  content        String       @db.Text
+  createdAt      DateTime     @default(now())
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender         User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
+
+model AuctionRoom {
+  id                String           @id @default(cuid())
+  postId            String           @unique
+  sellerId          String           @db.Uuid
+  currentHighestBid Float
+  highestBidderId   String?          @db.Uuid
+  status            AuctionRoomStatus @default(ACTIVE)
+  endsAt            DateTime
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  post              Post             @relation(fields: [postId], references: [id], onDelete: Cascade)
+  seller            User             @relation("AuctionSeller", fields: [sellerId], references: [id], onDelete: Cascade)
+  highestBidder     User?            @relation("AuctionWinner", fields: [highestBidderId], references: [id], onDelete: SetNull)
+  bids              Bid[]
+
+  @@index([status, endsAt])
+  @@index([sellerId, createdAt])
+}
+
+model Bid {
+  id            String      @id @default(cuid())
+  auctionRoomId String
+  bidderId      String      @db.Uuid
+  amount        Float
+  createdAt     DateTime    @default(now())
+  auctionRoom   AuctionRoom @relation(fields: [auctionRoomId], references: [id], onDelete: Cascade)
+  bidder        User        @relation(fields: [bidderId], references: [id], onDelete: Cascade)
+
+  @@index([auctionRoomId, createdAt])
+  @@index([bidderId, createdAt])
+}
