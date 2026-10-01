@@ -4,7 +4,7 @@ import type { NextFunction, Request, Response } from "express";
 import type { User } from "../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
 
-type AuthenticatedRequest = Request & { marketplaceUser?: User };
+type AuthenticatedRequest = Request & { marketplaceUser?: User; emailConfirmed?: boolean };
 
 let supabaseClient: ReturnType<typeof createClient> | undefined;
 
@@ -48,28 +48,59 @@ export async function requireSupabaseUser(
     }
 
     const authUser: SupabaseUser = data.user;
+    (request as AuthenticatedRequest).emailConfirmed = Boolean(authUser.email_confirmed_at);
     const displayName = metadataString(authUser.user_metadata?.full_name, authUser.user_metadata?.name);
     const avatarUrl = metadataString(authUser.user_metadata?.avatar_url, authUser.user_metadata?.picture);
-    const localUser = await prisma.user.upsert({
+    const profileUpdate = {
+      email: authUser.email ?? undefined,
+      displayName: displayName ?? undefined,
+      avatarUrl: avatarUrl ?? undefined,
+    };
+    const existingUser = await prisma.user.findUnique({
       where: { id: authUser.id },
-      update: {
-        email: authUser.email ?? undefined,
-        displayName: displayName ?? undefined,
-        avatarUrl: avatarUrl ?? undefined,
-      },
-      create: {
-        id: authUser.id,
-        email: authUser.email ?? null,
-        displayName,
-        avatarUrl,
-      },
     });
+
+    const profileChanged = existingUser !== null && (
+      (profileUpdate.email !== undefined && existingUser.email !== profileUpdate.email) ||
+      (profileUpdate.displayName !== undefined && existingUser.displayName !== profileUpdate.displayName) ||
+      (profileUpdate.avatarUrl !== undefined && existingUser.avatarUrl !== profileUpdate.avatarUrl)
+    );
+
+    const localUser = existingUser
+      ? profileChanged
+        ? await prisma.user.update({
+          where: { id: existingUser.id },
+          data: profileUpdate,
+        })
+        : existingUser
+      : await prisma.user.upsert({
+        where: { id: authUser.id },
+        update: profileUpdate,
+        create: {
+          id: authUser.id,
+          email: authUser.email ?? null,
+          displayName,
+          avatarUrl,
+        },
+      });
 
     (request as AuthenticatedRequest).marketplaceUser = localUser;
     next();
   } catch (error) {
     next(error);
   }
+}
+
+export function requireConfirmedEmail(
+  request: Request,
+  response: Response,
+  next: NextFunction,
+): void {
+  if ((request as AuthenticatedRequest).emailConfirmed !== true) {
+    response.status(403).json({ error: "Confirm your email address before using this feature." });
+    return;
+  }
+  next();
 }
 
 export type { AuthenticatedRequest };

@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import type { User } from "../generated/prisma/client.js";
-import { requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
+import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
 
 const router = Router();
@@ -61,6 +61,7 @@ router.get("/conversations", async (request, response) => {
   response.json({ conversations });
 });
 
+router.use("/listings/:listingId/conversation", requireConfirmedEmail);
 router.post("/listings/:listingId/conversation", async (request, response) => {
   const buyer = currentUser(request);
   const listing = await prisma.post.findUnique({
@@ -106,6 +107,7 @@ router.post("/listings/:listingId/conversation", async (request, response) => {
   response.status(201).json({ conversation });
 });
 
+router.use("/conversations/:conversationId/messages", requireConfirmedEmail);
 router.post("/conversations/:conversationId/messages", async (request, response) => {
   const user = currentUser(request);
   const access = await findParticipantConversation(request.params.conversationId, user.id);

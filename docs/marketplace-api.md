@@ -166,3 +166,97 @@ function useLiveMessages(
 ```
 
 Pass the signed-in user's Supabase client and the history returned by the messages endpoint. Realtime row events contain message columns, not the related sender profile, so use `senderId` for immediate display or fetch the sender profile separately. Keep sending messages through Express so its participant checks remain authoritative; do not expose a service-role key in the frontend.
+
+## Live Campus Auctions
+
+Apply the new `20260930170000_add_auctions` and `20260930180000_public_auction_accountability` migrations after the existing initial schema migration, then regenerate the Prisma client. Each listing can have at most one auction room. The listing's `Post.price` initializes `currentHighestBid` as the minimum; every submitted bid must be strictly greater. Auction creation accepts an ISO date-time no more than 30 days in the future. A seller cannot bid on their own listing.
+
+| Method | Endpoint | Behavior |
+| --- | --- | --- |
+| `POST` | `/api/listings/:listingId/auction` | Seller creates a room with `{ "endsAt": "..." }`. |
+| `GET` | `/api/auctions/:auctionRoomId` | Fetch current room/listing/participants and the latest 50 bids. |
+| `POST` | `/api/auctions/:auctionRoomId/bids` | Submit `{ "amount": 25.5 }`; amount must exceed both the current high bid and listing price. |
+| `POST` | `/api/auctions/:auctionRoomId/close` | Seller may end early; any authenticated caller may finalize an expired room. A qualifying winner moves the room to `PENDING_APPROVAL`; rooms without a bid meeting reserve close without approval. |
+| `POST` | `/api/auctions/:roomId/verdict` | Seller sends `{ "decision": "ACCEPT" }` or `{ "decision": "REJECT" }` after the room enters `PENDING_APPROVAL`. Accepting marks the room/listing `SOLD`, increments `completedAuctions`, and adds 5 trust points. Rejecting marks the room `REJECTED`, locks the listing as `RESERVED`, increments `backedOutAuctions`, and subtracts 20 trust points. Scores are bounded from 0 to 100. |
+| `GET` | `/api/auctions?limit=20&cursor=<roomId>` | Cursor-paginated active public rooms (1–50 per page), ordered by soonest expiration. The response includes `nextCursor`, or `null` when the feed is exhausted. |
+
+Bid placement locks the auction row with `SELECT ... FOR UPDATE` inside a database transaction. This serializes competing bids, validates each bid against the latest committed amount and end time, records the bid, updates the winner/high bid, and extends the clock atomically. A valid bid in the final 10 seconds adds 30 seconds to the current end time. The same row lock makes closing, verdicts, and bidding mutually ordered. A server-side worker checks every five seconds for expired rooms; it moves rooms with a winning bid meeting reserve to `PENDING_APPROVAL` and closes rooms with no qualifying bid. The close route can also trigger finalization on demand.
+
+Public room creation accepts `{ "endsAt": "...", "isPublic": true, "reservePrice": 30 }`. `isPublic` defaults to `true` for this API but can be set to `false`; the Prisma default is `false` for direct database writes. A reserve, when provided, must be at least the listing's starting price. Rejected posts use the existing `RESERVED` status as the temporary lock and require an explicit seller/admin relisting action; the system does not automatically reactivate a rejected listing.
+
+### Live Bid and Timer Updates
+
+Add both tables to the Supabase Realtime publication and allow authenticated campus users to read room and bid rows. All writes stay behind the authenticated Express API:
+
+```sql
+alter publication supabase_realtime add table public."AuctionRoom";
+alter publication supabase_realtime add table public."Bid";
+
+grant select on public."AuctionRoom", public."Bid" to authenticated;
+alter table public."AuctionRoom" enable row level security;
+alter table public."Bid" enable row level security;
+
+create policy "Authenticated users can read auction rooms"
+on public."AuctionRoom" for select to authenticated using (true);
+
+create policy "Authenticated users can read auction bids"
+on public."Bid" for select to authenticated using (true);
+```
+
+These broad read policies are suitable only if all auction room and bid data is intended to be visible to signed-in campus users. For more restrictive visibility, replace them with policies matching the product's campus membership model. Ensure the Supabase Realtime publication includes both tables.
+
+## Backend Performance Notes
+
+The marketplace feed builds one scorer per request, reusing the normalized buyer embedding and request timestamp instead of repeating setup for every candidate. Public auction feed results are cursor-paginated, with a maximum page size of 50 and a matching `(isPublic, status, endsAt)` index. The auction expiry worker finalizes up to 100 due rooms per batch using one `FOR UPDATE SKIP LOCKED` statement; overlapping local timer ticks are skipped, and the database lock lets multiple server instances share the work safely. Authenticated requests avoid writing the local user row unless Supabase profile fields changed.
+
+Subscribe to bid inserts for price/bidder activity and room updates for extensions, closures, and the authoritative timer:
+
+```ts
+const channel = supabase
+  .channel(`auction:${auctionRoomId}`)
+  .on("postgres_changes", {
+    event: "INSERT",
+    schema: "public",
+    table: "Bid",
+    filter: `auctionRoomId=eq.${auctionRoomId}`,
+  }, ({ new: bid }) => {
+    setBids((current) => current.some((item) => item.id === bid.id) ? current : [bid, ...current]);
+  })
+  .on("postgres_changes", {
+    event: "UPDATE",
+    schema: "public",
+    table: "AuctionRoom",
+    filter: `id=eq.${auctionRoomId}`,
+  }, ({ new: room }) => {
+    setCurrentHighestBid(room.currentHighestBid);
+    setEndsAt(room.endsAt);
+    setAuctionStatus(room.status);
+  })
+  .subscribe((status, error) => {
+    if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+      console.error("Auction Realtime subscription failed.", error);
+    }
+  });
+
+// On component cleanup:
+void supabase.removeChannel(channel);
+```
+
+Load the initial state from `GET /api/auctions/:auctionRoomId`, then treat Realtime payloads as incremental updates. Render the countdown from the latest server-provided `endsAt`; a client timer is only a display and must never determine whether a bid is accepted. The API remains authoritative for bid validation and auction closure.
+
+## Fixed-Price Shop and Cart
+
+Run the additive migration `20260930190000_add_shopping_cart_orders` and regenerate Prisma before enabling these routes. `GET /api/store` returns in-stock, fixed-price listings that are not attached to an auction. Auction rooms remain in the live-auction feed and cannot be added to the buy-now cart. `POST /api/listings` accepts optional `quantityAvailable` (integer 1–1000), defaulting to one.
+
+All cart endpoints require the signed-in user's Supabase bearer token. Cart rows are stored per user in PostgreSQL; client-submitted prices are never trusted.
+
+| Method | Endpoint | Behavior |
+| --- | --- | --- |
+| `GET` | `/api/store` | List active fixed-price listings with available stock. |
+| `GET` | `/api/cart` | Return this user's cart lines, current asking prices, stock availability, and listing previews. |
+| `POST` | `/api/cart/items` | Send `{ "postId": "...", "quantity": 1 }` to add units. Re-adding increments the existing line. |
+| `PATCH` | `/api/cart/items/:postId` | Set `{ "quantity": 2 }`, validated against current stock. |
+| `DELETE` | `/api/cart/items/:postId` | Remove this listing from the signed-in user's cart. |
+| `POST` | `/api/cart/checkout` | Atomically revalidates stock and auction status, snapshots current prices in cents, creates a pending campus-handoff order, decrements inventory, and clears the cart. |
+
+Checkout records an order and reserves inventory; it does not collect card payments or calculate shipping. Buyers and sellers arrange payment and a campus meetup directly. Cart prices are informational until checkout, where the current asking price is used. Cart writes and checkout lock the user row and listing rows to serialize concurrent changes and prevent overselling. Guest preview carts use browser local storage and do not create backend orders.

@@ -2,7 +2,8 @@ import "dotenv/config";
 import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { prisma } from "./lib/prisma.js";
-import auctionsRouter from "./routes/auctions.js";
+import auctionsRouter, { finalizeExpiredAuctions } from "./routes/auctions.js";
+import cartRouter from "./routes/cart.js";
 import conversationsRouter from "./routes/conversations.js";
 import marketplaceRouter from "./routes/marketplace.js";
 
@@ -34,7 +35,17 @@ app.use(express.json({ limit: "64kb" }));
 app.get("/health", (_request, response) => response.json({ status: "ok" }));
 app.use("/api", marketplaceRouter);
 app.use("/api", conversationsRouter);
+app.use("/api", cartRouter);
 app.use("/api", auctionsRouter);
+
+void finalizeExpiredAuctions().catch((error: unknown) => {
+  console.error("Failed to finalize expired auctions during startup.", error);
+});
+const auctionFinalizationTimer = setInterval(() => {
+  void finalizeExpiredAuctions().catch((error: unknown) => {
+    console.error("Failed to finalize expired auctions.", error);
+  });
+}, 5_000);
 
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
   console.error(error);
@@ -45,6 +56,7 @@ const port = Number(process.env.PORT ?? 3000);
 const server = app.listen(port, () => console.log(`Quick Resell API listening on port ${port}`));
 
 async function shutdown() {
+  clearInterval(auctionFinalizationTimer);
   server.close();
   await prisma.$disconnect();
 }

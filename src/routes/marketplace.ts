@@ -1,8 +1,8 @@
 import { Router, type Request } from "express";
 import type { User } from "../generated/prisma/client.js";
-import { requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
+import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
-import { computeMarketplaceScore, type MarketplaceFeedType } from "../../servies/marketRecomendationService.js";
+import { createMarketplaceScorer, type MarketplaceFeedType } from "../../servies/marketRecomendationService.js";
 
 const router = Router();
 const feedTypes: MarketplaceFeedType[] = ["FOR_YOU", "DEALS", "NEARBY", "EXPLORE"];
@@ -35,6 +35,26 @@ function isOwnedStorageUrl(value: unknown, ownerId: string): value is string {
 router.get("/categories", async (_request, response) => {
   const categories = await prisma.category.findMany({ orderBy: { name: "asc" } });
   response.json({ categories });
+});
+
+router.get("/store", async (request, response) => {
+  const buyer = currentUser(request);
+  const items = await prisma.post.findMany({
+    where: {
+      status: "ACTIVE",
+      quantityAvailable: { gt: 0 },
+      sellerId: { not: buyer.id },
+      auctionRoom: { is: null },
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+    take: 50,
+    include: {
+      category: true,
+      images: { orderBy: { sortOrder: "asc" } },
+      user: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true, completedAuctions: true } },
+    },
+  });
+  response.json({ items });
 });
 
 router.get("/feed", async (request, response) => {
@@ -71,23 +91,39 @@ router.get("/feed", async (request, response) => {
     ? posts.filter((post) => post.originalPrice !== null && post.originalPrice > post.price)
     : posts;
 
-  const ranked = await Promise.all(candidates.map(async (listing) => {
-    const result = await computeMarketplaceScore({
-      listing,
-      buyer,
-      buyerEmbedding: buyer.embedding,
-      feedType: feedType as MarketplaceFeedType,
-    });
+  const scoreListing = createMarketplaceScorer({
+    buyer,
+    buyerEmbedding: buyer.embedding,
+    feedType: feedType as MarketplaceFeedType,
+  });
+  const ranked = candidates.map((listing) => {
+    const result = scoreListing(listing);
     return { ...listing, score: result.score, scoreBreakdown: result.breakdown };
-  }));
+  });
 
   ranked.sort((left, right) => right.score - left.score || right.createdAt.getTime() - left.createdAt.getTime());
   response.json({ feedType, candidateCount: candidates.length, items: ranked.slice(0, requestedLimit) });
 });
 
+router.use("/listings", requireConfirmedEmail);
+router.get("/listings/mine", async (request, response) => {
+  const seller = currentUser(request);
+  const items = await prisma.post.findMany({
+    where: { sellerId: seller.id },
+    orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+    take: 100,
+    include: {
+      category: true,
+      images: { orderBy: { sortOrder: "asc" } },
+      user: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true } },
+    },
+  });
+  response.json({ items });
+});
+
 router.post("/listings", async (request, response) => {
   const seller = currentUser(request);
-  const { title, description, categoryId, price, originalPrice, locationCampus, imageUrls } = request.body ?? {};
+  const { title, description, categoryId, price, originalPrice, locationCampus, imageUrls, quantityAvailable = 1 } = request.body ?? {};
 
   if (typeof title !== "string" || !title.trim() || title.trim().length > 120) {
     response.status(400).json({ error: "title is required and must be at most 120 characters." });
@@ -99,6 +135,10 @@ router.post("/listings", async (request, response) => {
   }
   if (typeof price !== "number" || !Number.isFinite(price) || price < 0) {
     response.status(400).json({ error: "price must be a non-negative number." });
+    return;
+  }
+  if (typeof quantityAvailable !== "number" || !Number.isInteger(quantityAvailable) || quantityAvailable < 1 || quantityAvailable > 1000) {
+    response.status(400).json({ error: "quantityAvailable must be an integer between 1 and 1000." });
     return;
   }
   if (originalPrice !== undefined && originalPrice !== null &&
@@ -137,6 +177,7 @@ router.post("/listings", async (request, response) => {
       title: title.trim(),
       description: typeof description === "string" ? description.trim() || null : null,
       price,
+      quantityAvailable,
       originalPrice: originalPrice ?? null,
       locationCampus: typeof locationCampus === "string" ? locationCampus.trim() || null : null,
       images: {

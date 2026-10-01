@@ -1,9 +1,9 @@
 generator client {
-  provider                = "prisma-client"
-  output                  = "../src/generated/prisma"
-  moduleFormat            = "esm"
-  generatedFileExtension  = "ts"
-  importFileExtension     = "ts"
+  provider               = "prisma-client"
+  output                 = "../src/generated/prisma"
+  moduleFormat           = "esm"
+  generatedFileExtension = "ts"
+  importFileExtension    = "ts"
 }
 
 datasource db {
@@ -19,27 +19,42 @@ enum ListingStatus {
 
 enum AuctionRoomStatus {
   ACTIVE
+  PENDING_APPROVAL
+  SOLD
+  REJECTED
   CLOSED
 }
 
+enum PurchaseOrderStatus {
+  PENDING_HANDOFF
+  COMPLETED
+  CANCELLED
+}
+
 model User {
-  id                    String   @id @db.Uuid
-  email                 String?  @unique
+  id                    String         @id @db.Uuid
+  email                 String?        @unique
   displayName           String?
   avatarUrl             String?
   preferredDormOrCampus String?
   budgetPreference      Float?
-  savedCategories       String[] @default([])
+  trustScore            Float          @default(50.0)
+  completedAuctions     Int            @default(0)
+  backedOutAuctions     Int            @default(0)
+  savedCategories       String[]       @default([])
   embedding             Json?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
   posts                 Post[]
   buyerConversations    Conversation[] @relation("ConversationBuyer")
   sellerConversations   Conversation[] @relation("ConversationSeller")
   sentMessages          Message[]
-  sellerAuctionRooms   AuctionRoom[] @relation("AuctionSeller")
-  wonAuctionRooms      AuctionRoom[] @relation("AuctionWinner")
-  bids                 Bid[]
+  sellerAuctionRooms    AuctionRoom[]  @relation("AuctionSeller")
+  wonAuctionRooms       AuctionRoom[]  @relation("AuctionWinner")
+  bids                  Bid[]
+  cartItems             CartItem[]
+  purchaseOrders        PurchaseOrder[]
+  soldOrderItems         PurchaseOrderItem[]
 }
 
 model Category {
@@ -50,8 +65,8 @@ model Category {
 }
 
 model Post {
-  id             String        @id @default(cuid())
-  sellerId       String        @db.Uuid
+  id             String         @id @default(cuid())
+  sellerId       String         @db.Uuid
   categoryId     String
   title          String
   description    String?
@@ -59,14 +74,17 @@ model Post {
   originalPrice  Float?
   locationCampus String?
   embedding      Json?
-  status         ListingStatus @default(ACTIVE)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  user           User          @relation(fields: [sellerId], references: [id], onDelete: Cascade)
-  category       Category      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  status         ListingStatus  @default(ACTIVE)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  user           User           @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  category       Category       @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   images         ListingImage[]
   conversations  Conversation[]
   auctionRoom    AuctionRoom?
+  quantityAvailable Int             @default(1)
+  cartItems      CartItem[]
+  purchaseOrderItems PurchaseOrderItem[]
 
   @@index([status, createdAt])
   @@index([categoryId, status])
@@ -114,21 +132,24 @@ model Message {
 }
 
 model AuctionRoom {
-  id                String           @id @default(cuid())
-  postId            String           @unique
-  sellerId          String           @db.Uuid
+  id                String            @id @default(cuid())
+  postId            String            @unique
+  sellerId          String            @db.Uuid
   currentHighestBid Float
-  highestBidderId   String?          @db.Uuid
+  highestBidderId   String?           @db.Uuid
+  isPublic          Boolean           @default(false)
+  reservePrice      Float?
   status            AuctionRoomStatus @default(ACTIVE)
   endsAt            DateTime
-  createdAt         DateTime         @default(now())
-  updatedAt         DateTime         @updatedAt
-  post              Post             @relation(fields: [postId], references: [id], onDelete: Cascade)
-  seller            User             @relation("AuctionSeller", fields: [sellerId], references: [id], onDelete: Cascade)
-  highestBidder     User?            @relation("AuctionWinner", fields: [highestBidderId], references: [id], onDelete: SetNull)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  post              Post              @relation(fields: [postId], references: [id], onDelete: Cascade)
+  seller            User              @relation("AuctionSeller", fields: [sellerId], references: [id], onDelete: Cascade)
+  highestBidder     User?             @relation("AuctionWinner", fields: [highestBidderId], references: [id], onDelete: SetNull)
   bids              Bid[]
 
   @@index([status, endsAt])
+  @@index([isPublic, status, endsAt])
   @@index([sellerId, createdAt])
 }
 
@@ -143,4 +164,49 @@ model Bid {
 
   @@index([auctionRoomId, createdAt])
   @@index([bidderId, createdAt])
+}
+
+model CartItem {
+  id        String   @id @default(cuid())
+  userId    String   @db.Uuid
+  postId    String
+  quantity  Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, postId])
+  @@index([userId, createdAt])
+}
+
+model PurchaseOrder {
+  id          String               @id @default(cuid())
+  buyerId     String               @db.Uuid
+  status      PurchaseOrderStatus  @default(PENDING_HANDOFF)
+  subtotalCents Int
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  buyer       User                 @relation(fields: [buyerId], references: [id], onDelete: Restrict)
+  items       PurchaseOrderItem[]
+
+  @@index([buyerId, createdAt])
+  @@index([status, createdAt])
+}
+
+model PurchaseOrderItem {
+  id             String        @id @default(cuid())
+  orderId        String
+  postId         String
+  sellerId       String        @db.Uuid
+  title          String
+  quantity       Int
+  unitPriceCents Int
+  createdAt      DateTime      @default(now())
+  order          PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  post           Post          @relation(fields: [postId], references: [id], onDelete: Restrict)
+  seller         User          @relation(fields: [sellerId], references: [id], onDelete: Restrict)
+
+  @@index([sellerId, createdAt])
+  @@index([postId])
 }
