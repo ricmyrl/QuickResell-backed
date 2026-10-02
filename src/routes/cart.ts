@@ -1,3 +1,4 @@
+import axios from "axios";
 import { Router, type Request } from "express";
 import type { Post, User } from "../generated/prisma/client.js";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
@@ -17,13 +18,13 @@ const cartInclude = {
     include: {
       category: true,
       images: { orderBy: { sortOrder: "asc" as const } },
-      user: { select: { id: true, displayName: true, avatarUrl: true } },
+      user: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true } },
       auctionRoom: { select: { id: true, status: true } },
     },
   },
 };
 
-router.use(requireSupabaseUser);
+router.use("/cart", requireSupabaseUser);
 
 function currentUser(request: Request): User {
   const user = (request as AuthenticatedRequest).marketplaceUser;
@@ -38,6 +39,30 @@ function validQuantity(value: unknown): value is number {
 function isAvailable(post: Post & { auctionRoom?: { status: string } | null }, userId: string, quantity: number): boolean {
   const roomUnavailable = post.auctionRoom && post.auctionRoom.status !== "CLOSED";
   return post.status === "ACTIVE" && post.sellerId !== userId && !roomUnavailable && post.quantityAvailable >= quantity;
+}
+
+async function verifyPaystackReference(reference: string, expectedAmountCents: number): Promise<void> {
+  const secretKey = process.env.PAYSTACK_SECRET_KEY;
+  if (!secretKey) throw new CartError("PAYSTACK_SECRET_KEY is not configured.", 500);
+
+  try {
+    const response = await axios.get(`https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`, {
+      headers: { Authorization: `Bearer ${secretKey}` },
+    });
+    const transaction = response.data?.data;
+
+    if (!transaction || transaction.status !== "success") {
+      throw new CartError("Payment verification failed or the transaction is not complete.", 402);
+    }
+
+    if (Number.isFinite(expectedAmountCents) && expectedAmountCents > 0 && Number(transaction.amount) !== expectedAmountCents) {
+      throw new CartError("The payment amount does not match the order total.", 402);
+    }
+  } catch (error) {
+    if (error instanceof CartError) throw error;
+    const message = axios.isAxiosError(error) ? error.response?.data?.message ?? error.message : "Payment verification failed.";
+    throw new CartError(message, 402);
+  }
 }
 
 router.get("/cart", async (request, response) => {
@@ -152,68 +177,73 @@ router.delete("/cart/items/:postId", async (request, response) => {
 router.use("/cart/checkout", requireConfirmedEmail);
 router.post("/cart/checkout", async (request, response) => {
   const buyer = currentUser(request);
+  const { paymentReference } = request.body ?? {};
   let order;
   try {
     order = await prisma.$transaction(async (transaction) => {
-    await transaction.$queryRaw<Array<{ id: string }>>`
-      SELECT "id" FROM "User" WHERE "id" = ${buyer.id}::uuid FOR UPDATE
-    `;
-    await transaction.$queryRaw<Array<{ id: string }>>`
-      SELECT "id" FROM "CartItem" WHERE "userId" = ${buyer.id}::uuid ORDER BY "postId" FOR UPDATE
-    `;
-    const cartItems = await transaction.cartItem.findMany({
-      where: { userId: buyer.id },
-      orderBy: { postId: "asc" },
-    });
-    if (cartItems.length === 0) return null;
-
-    const purchaseLines: Array<{ post: Post; quantity: number; unitPriceCents: number }> = [];
-    for (const item of cartItems) {
-      const locked = await transaction.$queryRaw<Array<{ id: string }>>`
-        SELECT "id" FROM "Post" WHERE "id" = ${item.postId} FOR UPDATE
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "User" WHERE "id" = ${buyer.id}::uuid FOR UPDATE
       `;
-      if (!locked.length) throw new CartError("A listing in your cart no longer exists. Refresh the cart and try again.", 409);
-      const post = await transaction.post.findUnique({
-        where: { id: item.postId },
-        include: { auctionRoom: { select: { status: true } } },
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "CartItem" WHERE "userId" = ${buyer.id}::uuid ORDER BY "postId" FOR UPDATE
+      `;
+      const cartItems = await transaction.cartItem.findMany({
+        where: { userId: buyer.id },
+        orderBy: { postId: "asc" },
       });
-      if (!post || !isAvailable(post, buyer.id, item.quantity)) {
-        throw new CartError(`“${post?.title ?? "An item"}” is no longer available in the requested quantity.`, 409);
+      if (cartItems.length === 0) return null;
+
+      const purchaseLines: Array<{ post: Post; quantity: number; unitPriceCents: number }> = [];
+      for (const item of cartItems) {
+        const locked = await transaction.$queryRaw<Array<{ id: string }>>`
+          SELECT "id" FROM "Post" WHERE "id" = ${item.postId} FOR UPDATE
+        `;
+        if (!locked.length) throw new CartError("A listing in your cart no longer exists. Refresh the cart and try again.", 409);
+        const post = await transaction.post.findUnique({
+          where: { id: item.postId },
+          include: { auctionRoom: { select: { status: true } } },
+        });
+        if (!post || !isAvailable(post, buyer.id, item.quantity)) {
+          throw new CartError(`“${post?.title ?? "An item"}” is no longer available in the requested quantity.`, 409);
+        }
+        const unitPriceCents = Math.round(post.price * 100);
+        if (!Number.isSafeInteger(unitPriceCents) || unitPriceCents < 0) {
+          throw new CartError(`“${post.title}” has an invalid asking price.`, 409);
+        }
+        purchaseLines.push({ post, quantity: item.quantity, unitPriceCents });
       }
-      const unitPriceCents = Math.round(post.price * 100);
-      if (!Number.isSafeInteger(unitPriceCents) || unitPriceCents < 0) {
-        throw new CartError(`“${post.title}” has an invalid asking price.`, 409);
+
+      const subtotalCents = purchaseLines.reduce((sum, line) => sum + line.quantity * line.unitPriceCents, 0);
+      if (!Number.isSafeInteger(subtotalCents)) throw new CartError("The order total is too large to process.", 400);
+
+      if (typeof paymentReference === "string" && paymentReference.trim().length > 0) {
+        await verifyPaystackReference(paymentReference, subtotalCents);
       }
-      purchaseLines.push({ post, quantity: item.quantity, unitPriceCents });
-    }
 
-    const subtotalCents = purchaseLines.reduce((sum, line) => sum + line.quantity * line.unitPriceCents, 0);
-    if (!Number.isSafeInteger(subtotalCents)) throw new CartError("The order total is too large to process.", 400);
-
-    const createdOrder = await transaction.purchaseOrder.create({
-      data: {
-        buyerId: buyer.id,
-        subtotalCents,
-        items: { create: purchaseLines.map(({ post, quantity, unitPriceCents }) => ({
-          postId: post.id,
-          sellerId: post.sellerId,
-          title: post.title,
-          quantity,
-          unitPriceCents,
-        })) },
-      },
-      include: { items: true },
-    });
-
-    for (const line of purchaseLines) {
-      const quantityAvailable = line.post.quantityAvailable - line.quantity;
-      await transaction.post.update({
-        where: { id: line.post.id },
-        data: { quantityAvailable, ...(quantityAvailable === 0 ? { status: "SOLD" } : {}) },
+      const createdOrder = await transaction.purchaseOrder.create({
+        data: {
+          buyerId: buyer.id,
+          subtotalCents,
+          items: { create: purchaseLines.map(({ post, quantity, unitPriceCents }) => ({
+            postId: post.id,
+            sellerId: post.sellerId,
+            title: post.title,
+            quantity,
+            unitPriceCents,
+          })) },
+        },
+        include: { items: true },
       });
-    }
-    await transaction.cartItem.deleteMany({ where: { userId: buyer.id } });
-    return createdOrder;
+
+      for (const line of purchaseLines) {
+        const quantityAvailable = line.post.quantityAvailable - line.quantity;
+        await transaction.post.update({
+          where: { id: line.post.id },
+          data: { quantityAvailable, ...(quantityAvailable === 0 ? { status: "SOLD" } : {}) },
+        });
+      }
+      await transaction.cartItem.deleteMany({ where: { userId: buyer.id } });
+      return createdOrder;
     });
   } catch (error) {
     if (error instanceof CartError) {

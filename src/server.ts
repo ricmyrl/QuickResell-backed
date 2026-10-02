@@ -3,11 +3,17 @@ import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { prisma } from "./lib/prisma.js";
 import auctionsRouter, { finalizeExpiredAuctions } from "./routes/auctions.js";
+import auctionWatchlistRouter from "./routes/auctionWatchlist.js";
 import cartRouter from "./routes/cart.js";
 import conversationsRouter from "./routes/conversations.js";
 import marketplaceRouter from "./routes/marketplace.js";
+import notificationsRouter from "./routes/notifications.js";
+import paymentsRouter from "./routes/payments.js";
 
-const requiredEnvironment = ["DATABASE_URL", "SUPABASE_URL"];
+const requiredEnvironment = ["SUPABASE_URL"];
+if (!process.env.DATABASE_URL && !process.env.DIRECT_URL) {
+  throw new Error("DATABASE_URL or DIRECT_URL must be configured.");
+}
 for (const name of requiredEnvironment) {
   if (!process.env[name]) throw new Error(`${name} must be configured.`);
 }
@@ -21,21 +27,41 @@ const allowedOrigins = (process.env.FRONTEND_URL ?? "http://localhost:5173")
   .map((origin) => origin.trim())
   .filter(Boolean);
 
+function isAllowedOrigin(origin: string | undefined): boolean {
+  if (!origin) return true;
+
+  try {
+    const parsed = new URL(origin);
+    if (allowedOrigins.includes(origin)) return true;
+    const hostname = parsed.hostname.toLowerCase();
+    if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0") return true;
+    if (hostname.startsWith("10.33.121.") || hostname.startsWith("192.168.") || hostname.startsWith("172.")) return true;
+  } catch {
+    return false;
+  }
+
+  return false;
+}
+
 app.use(cors({
   origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (isAllowedOrigin(origin)) {
       callback(null, true);
       return;
     }
     callback(new Error("Origin is not allowed by CORS."));
   },
+  credentials: true,
 }));
 app.use(express.json({ limit: "64kb" }));
 
 app.get("/health", (_request, response) => response.json({ status: "ok" }));
+app.use("/api", auctionWatchlistRouter);
 app.use("/api", marketplaceRouter);
+app.use("/api", notificationsRouter);
 app.use("/api", conversationsRouter);
 app.use("/api", cartRouter);
+app.use("/api", paymentsRouter);
 app.use("/api", auctionsRouter);
 
 void finalizeExpiredAuctions().catch((error: unknown) => {

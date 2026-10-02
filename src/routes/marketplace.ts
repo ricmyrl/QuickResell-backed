@@ -2,14 +2,13 @@ import { Router, type Request } from "express";
 import type { User } from "../generated/prisma/client.js";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
+import { createNotificationsForUsers } from "../lib/notifications.js";
 import { createMarketplaceScorer, type MarketplaceFeedType } from "../../servies/marketRecomendationService.js";
 
 const router = Router();
 const feedTypes: MarketplaceFeedType[] = ["FOR_YOU", "DEALS", "NEARBY", "EXPLORE"];
 const maxFeedCandidates = 500;
 const maxListingImages = 8;
-
-router.use(requireSupabaseUser);
 
 function currentUser(request: Request): User {
   const user = (request as AuthenticatedRequest).marketplaceUser;
@@ -37,13 +36,11 @@ router.get("/categories", async (_request, response) => {
   response.json({ categories });
 });
 
-router.get("/store", async (request, response) => {
-  const buyer = currentUser(request);
+router.get("/store", async (_request, response) => {
   const items = await prisma.post.findMany({
     where: {
       status: "ACTIVE",
       quantityAvailable: { gt: 0 },
-      sellerId: { not: buyer.id },
       auctionRoom: { is: null },
     },
     orderBy: [{ createdAt: "desc" }, { id: "asc" }],
@@ -51,12 +48,13 @@ router.get("/store", async (request, response) => {
     include: {
       category: true,
       images: { orderBy: { sortOrder: "asc" } },
-      user: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true, completedAuctions: true } },
+      user: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true, completedAuctions: true, isCampusVerified: true } },
     },
   });
   response.json({ items });
 });
 
+router.use("/feed", requireSupabaseUser);
 router.get("/feed", async (request, response) => {
   const requestedType = request.query.type;
   const feedType = typeof requestedType === "string" ? requestedType : "FOR_YOU";
@@ -105,7 +103,7 @@ router.get("/feed", async (request, response) => {
   response.json({ feedType, candidateCount: candidates.length, items: ranked.slice(0, requestedLimit) });
 });
 
-router.use("/listings", requireConfirmedEmail);
+router.use("/listings", requireSupabaseUser, requireConfirmedEmail);
 router.get("/listings/mine", async (request, response) => {
   const seller = currentUser(request);
   const items = await prisma.post.findMany({
@@ -115,10 +113,50 @@ router.get("/listings/mine", async (request, response) => {
     include: {
       category: true,
       images: { orderBy: { sortOrder: "asc" } },
-      user: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true } },
+      user: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true, isCampusVerified: true } },
     },
   });
   response.json({ items });
+});
+
+router.use("/watchlist", requireSupabaseUser);
+router.get("/watchlist", async (request, response) => {
+  const user = currentUser(request);
+  const rows = await prisma.watchlistItem.findMany({
+    where: { userId: user.id },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    include: {
+      post: { select: { id: true } },
+    },
+  });
+
+  response.json({ items: rows.map((row) => row.postId) });
+});
+
+router.post("/watchlist/:listingId", async (request, response) => {
+  const user = currentUser(request);
+  const listing = await prisma.post.findUnique({ where: { id: request.params.listingId }, select: { id: true, title: true } });
+  if (!listing) {
+    response.status(404).json({ error: "Listing not found." });
+    return;
+  }
+
+  const saved = await prisma.watchlistItem.upsert({
+    where: { userId_postId: { userId: user.id, postId: listing.id } },
+    update: {},
+    create: { userId: user.id, postId: listing.id },
+  });
+
+  response.status(201).json({ item: saved });
+});
+
+router.delete("/watchlist/:listingId", async (request, response) => {
+  const user = currentUser(request);
+  const removed = await prisma.watchlistItem.deleteMany({
+    where: { userId: user.id, postId: request.params.listingId },
+  });
+
+  response.json({ removed: removed.count });
 });
 
 router.post("/listings", async (request, response) => {
@@ -187,11 +225,73 @@ router.post("/listings", async (request, response) => {
     include: {
       category: true,
       images: { orderBy: { sortOrder: "asc" } },
-      user: { select: { id: true, displayName: true, avatarUrl: true } },
+      user: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true, isCampusVerified: true } },
     },
   });
 
   response.status(201).json({ listing });
+});
+
+router.put("/listings/:listingId", async (request, response) => {
+  const seller = currentUser(request);
+  const listing = await prisma.post.findUnique({
+    where: { id: request.params.listingId },
+    include: {
+      user: { select: { id: true, isCampusVerified: true } },
+      watchlistItems: { select: { userId: true } },
+    },
+  });
+
+  if (!listing) {
+    response.status(404).json({ error: "Listing not found." });
+    return;
+  }
+  if (listing.sellerId !== seller.id) {
+    response.status(403).json({ error: "Only the seller can update this listing." });
+    return;
+  }
+
+  const nextPrice = request.body?.price;
+  const nextOriginalPrice = request.body?.originalPrice;
+  if (nextPrice !== undefined && (typeof nextPrice !== "number" || !Number.isFinite(nextPrice) || nextPrice < 0)) {
+    response.status(400).json({ error: "price must be a non-negative number." });
+    return;
+  }
+  if (nextOriginalPrice !== undefined && nextOriginalPrice !== null &&
+      (typeof nextOriginalPrice !== "number" || !Number.isFinite(nextOriginalPrice) || nextOriginalPrice < (nextPrice ?? listing.price))) {
+    response.status(400).json({ error: "originalPrice must be a number greater than or equal to price." });
+    return;
+  }
+
+  const updatedListing = await prisma.post.update({
+    where: { id: listing.id },
+    data: {
+      ...(nextPrice !== undefined ? { price: nextPrice } : {}),
+      ...(nextOriginalPrice !== undefined ? { originalPrice: nextOriginalPrice ?? null } : {}),
+    },
+    include: {
+      category: true,
+      images: { orderBy: { sortOrder: "asc" } },
+      user: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true, isCampusVerified: true } },
+    },
+  });
+
+  const oldPrice = listing.price;
+  const newPrice = updatedListing.price;
+  if (nextPrice !== undefined && newPrice !== oldPrice && listing.watchlistItems.length > 0) {
+    const priceChange = Number((newPrice - oldPrice).toFixed(2));
+    const watchers = listing.watchlistItems.map((entry) => entry.userId);
+    await createNotificationsForUsers(watchers.map((userId) => ({
+      userId,
+      type: "PRICE_UPDATED",
+      title: "Price updated",
+      message: `${updatedListing.title} changed by ${priceChange >= 0 ? "+" : ""}$${Math.abs(priceChange).toFixed(2)}.`,
+      entityType: "listing",
+      entityId: updatedListing.id,
+    })));
+  }
+
+  response.json({ listing: updatedListing });
 });
 
 export default router;

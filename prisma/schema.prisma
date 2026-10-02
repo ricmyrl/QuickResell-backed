@@ -31,11 +31,30 @@ enum PurchaseOrderStatus {
   CANCELLED
 }
 
+enum MessageType {
+  GENERAL
+  REVIEW
+  REPLY
+}
+
+enum NotificationType {
+  BID_PLACED
+  OUTBID
+  AUCTION_WON
+  AUCTION_CLOSED
+  PRICE_UPDATED
+  LISTING_SOLD
+  REVIEW
+  REPLY
+  ORDER_UPDATE
+}
+
 model User {
   id                    String         @id @db.Uuid
   email                 String?        @unique
   displayName           String?
   avatarUrl             String?
+  isCampusVerified      Boolean        @default(false)
   preferredDormOrCampus String?
   budgetPreference      Float?
   trustScore            Float          @default(50.0)
@@ -49,10 +68,13 @@ model User {
   buyerConversations    Conversation[] @relation("ConversationBuyer")
   sellerConversations   Conversation[] @relation("ConversationSeller")
   sentMessages          Message[]
+  notifications         Notification[]
   sellerAuctionRooms    AuctionRoom[]  @relation("AuctionSeller")
   wonAuctionRooms       AuctionRoom[]  @relation("AuctionWinner")
   bids                  Bid[]
   cartItems             CartItem[]
+  watchlistItems        WatchlistItem[]
+  auctionWatchlistItems AuctionWatchlistItem[]
   purchaseOrders        PurchaseOrder[]
   soldOrderItems         PurchaseOrderItem[]
 }
@@ -84,6 +106,7 @@ model Post {
   auctionRoom    AuctionRoom?
   quantityAvailable Int             @default(1)
   cartItems      CartItem[]
+  watchlistItems WatchlistItem[]
   purchaseOrderItems PurchaseOrderItem[]
 
   @@index([status, createdAt])
@@ -124,11 +147,33 @@ model Message {
   conversationId String
   senderId       String       @db.Uuid
   content        String       @db.Text
+  type           MessageType  @default(GENERAL)
+  rating         Int?
+  replyToId      String?
   createdAt      DateTime     @default(now())
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   sender         User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  replyTo        Message?     @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies        Message[]    @relation("MessageReplies")
 
   @@index([conversationId, createdAt])
+  @@index([conversationId, type])
+}
+
+model Notification {
+  id            String           @id @default(cuid())
+  userId        String           @db.Uuid
+  type          NotificationType
+  title         String
+  message       String           @db.Text
+  entityType    String?
+  entityId      String?
+  isRead        Boolean          @default(false)
+  createdAt     DateTime         @default(now())
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt])
+  @@index([entityType, entityId])
 }
 
 model AuctionRoom {
@@ -147,6 +192,7 @@ model AuctionRoom {
   seller            User              @relation("AuctionSeller", fields: [sellerId], references: [id], onDelete: Cascade)
   highestBidder     User?             @relation("AuctionWinner", fields: [highestBidderId], references: [id], onDelete: SetNull)
   bids              Bid[]
+  watchlistItems    AuctionWatchlistItem[]
 
   @@index([status, endsAt])
   @@index([isPublic, status, endsAt])
@@ -178,6 +224,34 @@ model CartItem {
 
   @@unique([userId, postId])
   @@index([userId, createdAt])
+}
+
+model WatchlistItem {
+  id        String   @id @default(cuid())
+  userId    String   @db.Uuid
+  postId    String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, postId])
+  @@index([userId, createdAt])
+}
+
+model AuctionWatchlistItem {
+  id             String      @id @default(cuid())
+  userId         String      @db.Uuid
+  auctionRoomId  String
+  maxBid         Float
+  bidStep        Float       @default(1)
+  autoBidEnabled Boolean     @default(false)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  auctionRoom    AuctionRoom @relation(fields: [auctionRoomId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, auctionRoomId])
+  @@index([autoBidEnabled, updatedAt])
 }
 
 model PurchaseOrder {

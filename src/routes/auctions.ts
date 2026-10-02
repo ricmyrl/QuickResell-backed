@@ -2,7 +2,9 @@ import { Router, type Request } from "express";
 import type { AuctionRoom, Bid, Prisma, User } from "../generated/prisma/client.js";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
+import { notifyAuctionResolution, notifyBidActivity } from "../lib/notifications.js";
 import { sendAuctionWonEmail } from "../services/mail.js";
+import { processAuctionAutoBid } from "../services/autoBidding.js";
 
 const router = Router();
 const antiSnipeWindowMs = 10_000;
@@ -55,8 +57,6 @@ function isAuctionVerdictRequest(value: unknown): value is AuctionVerdictRequest
   if (typeof value !== "object" || value === null || !("decision" in value)) return false;
   return value.decision === "ACCEPT" || value.decision === "REJECT";
 }
-
-router.use(requireSupabaseUser);
 
 function currentUser(request: Request): User {
   const user = (request as AuthenticatedRequest).marketplaceUser;
@@ -129,7 +129,7 @@ export async function finalizeExpiredAuctions(): Promise<void> {
   }
 }
 
-router.use("/listings/:listingId/auction", requireConfirmedEmail);
+router.use("/listings/:listingId/auction", requireSupabaseUser, requireConfirmedEmail);
 router.post("/listings/:listingId/auction", async (request, response) => {
   const seller = currentUser(request);
   const endsAtInput = request.body?.endsAt;
@@ -189,7 +189,7 @@ router.post("/listings/:listingId/auction", async (request, response) => {
         reservePrice: reservePrice ?? null,
       },
       include: {
-        post: { select: { id: true, title: true, price: true, images: { take: 1, orderBy: { sortOrder: "asc" } } } },
+        post: { select: { id: true, title: true, price: true, locationCampus: true, category: { select: { name: true } }, images: { take: 1, orderBy: { sortOrder: "asc" } } } },
       },
     });
     response.status(201).json({ auctionRoom });
@@ -199,6 +199,7 @@ router.post("/listings/:listingId/auction", async (request, response) => {
   }
 });
 
+router.use("/auctions/mine", requireSupabaseUser);
 router.get("/auctions/mine", async (request, response) => {
   const seller = currentUser(request);
   const [auctionRooms, sellerStats] = await Promise.all([
@@ -213,6 +214,8 @@ router.get("/auctions/mine", async (request, response) => {
             title: true,
             description: true,
             price: true,
+            locationCampus: true,
+            category: { select: { name: true } },
             images: { take: 1, orderBy: { sortOrder: "asc" } },
           },
         },
@@ -271,10 +274,12 @@ router.get("/auctions", async (request, response) => {
           id: true,
           title: true,
           price: true,
+          locationCampus: true,
+          category: { select: { name: true } },
           images: { take: 1, orderBy: { sortOrder: "asc" } },
         },
       },
-      seller: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true } },
+      seller: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true, completedAuctions: true } },
     },
   });
   const hasMore = rows.length > requestedLimit;
@@ -295,10 +300,12 @@ router.get("/auctions/:auctionRoomId", async (request, response) => {
           title: true,
           description: true,
           price: true,
+          locationCampus: true,
+          category: { select: { name: true } },
           images: { take: 1, orderBy: { sortOrder: "asc" } },
         },
       },
-      seller: { select: { id: true, displayName: true, avatarUrl: true } },
+      seller: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true, completedAuctions: true } },
       highestBidder: { select: { id: true, displayName: true, avatarUrl: true } },
       bids: {
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -315,7 +322,7 @@ router.get("/auctions/:auctionRoomId", async (request, response) => {
   response.json({ auctionRoom });
 });
 
-router.use("/auctions/:auctionRoomId/bids", requireConfirmedEmail);
+router.use("/auctions/:auctionRoomId/bids", requireSupabaseUser, requireConfirmedEmail);
 router.post("/auctions/:auctionRoomId/bids", async (request, response) => {
   const bidder = currentUser(request);
   const amount = request.body?.amount;
@@ -367,6 +374,22 @@ router.post("/auctions/:auctionRoomId/bids", async (request, response) => {
       },
     });
 
+    const itemTitle = await transaction.post.findUnique({
+      where: { id: room.postId },
+      select: { title: true },
+    });
+
+    if (itemTitle) {
+      await notifyBidActivity({
+        auctionRoomId: room.id,
+        auctionTitle: itemTitle.title,
+        sellerId: room.sellerId,
+        previousBidderId: room.highestBidderId,
+        bidderId: bidder.id,
+        amount,
+      });
+    }
+
     return { bid, auctionRoom };
   });
 
@@ -374,10 +397,15 @@ router.post("/auctions/:auctionRoomId/bids", async (request, response) => {
     response.status(result.status).json({ error: result.error });
     return;
   }
-  response.status(201).json(result);
+  const automaticBid = await processAuctionAutoBid(result.auctionRoom.id);
+  response.status(201).json({
+    ...result,
+    auctionRoom: automaticBid.auctionRoom ?? result.auctionRoom,
+    automaticBid: automaticBid.bid,
+  });
 });
 
-router.use("/auctions/:auctionRoomId/close", requireConfirmedEmail);
+router.use("/auctions/:auctionRoomId/close", requireSupabaseUser, requireConfirmedEmail);
 router.post("/auctions/:auctionRoomId/close", async (request, response) => {
   const actor = currentUser(request);
   const result = await prisma.$transaction<CloseAuctionResult>(async (transaction) => {
@@ -412,7 +440,7 @@ router.post("/auctions/:auctionRoomId/close", async (request, response) => {
   response.json(result);
 });
 
-router.use("/auctions/:roomId/verdict", requireConfirmedEmail);
+router.use("/auctions/:roomId/verdict", requireSupabaseUser, requireConfirmedEmail);
 router.post("/auctions/:roomId/verdict", async (request, response) => {
   const seller = currentUser(request);
   const body: unknown = request.body;
@@ -460,6 +488,21 @@ router.post("/auctions/:roomId/verdict", async (request, response) => {
         where: { id: seller.id },
         select: { trustScore: true },
       });
+
+      const winningListing = await transaction.post.findUnique({
+        where: { id: currentRoom.postId },
+        select: { title: true },
+      });
+      if (winningListing) {
+        await notifyAuctionResolution({
+          userId: currentRoom.highestBidderId,
+          auctionRoomId: currentRoom.id,
+          auctionTitle: winningListing.title,
+          type: "AUCTION_WON",
+          finalPrice: currentRoom.currentHighestBid,
+        });
+      }
+
       return { auctionRoom, trustScore: updatedSeller.trustScore };
     }
 
@@ -481,6 +524,20 @@ router.post("/auctions/:roomId/verdict", async (request, response) => {
       where: { id: seller.id },
       select: { trustScore: true },
     });
+    const rejectedListing = await transaction.post.findUnique({
+      where: { id: currentRoom.postId },
+      select: { title: true },
+    });
+    if (rejectedListing && currentRoom.highestBidderId) {
+      await notifyAuctionResolution({
+        userId: currentRoom.highestBidderId,
+        auctionRoomId: currentRoom.id,
+        auctionTitle: rejectedListing.title,
+        type: "AUCTION_CLOSED",
+        finalPrice: currentRoom.currentHighestBid,
+        reason: "Seller rejected the winning bid",
+      });
+    }
     return { auctionRoom, trustScore: updatedSeller.trustScore };
   });
 

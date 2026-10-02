@@ -66,21 +66,32 @@ export async function requireSupabaseUser(
       (profileUpdate.avatarUrl !== undefined && existingUser.avatarUrl !== profileUpdate.avatarUrl)
     );
 
+    const isCampusVerified = Boolean(authUser.email_confirmed_at);
     const localUser = existingUser
       ? profileChanged
         ? await prisma.user.update({
           where: { id: existingUser.id },
-          data: profileUpdate,
+          data: {
+            ...profileUpdate,
+            isCampusVerified: existingUser.isCampusVerified || isCampusVerified,
+          },
         })
-        : existingUser
+        : {
+            ...existingUser,
+            isCampusVerified: existingUser.isCampusVerified || isCampusVerified,
+          }
       : await prisma.user.upsert({
         where: { id: authUser.id },
-        update: profileUpdate,
+        update: {
+          ...profileUpdate,
+          isCampusVerified: isCampusVerified,
+        },
         create: {
           id: authUser.id,
           email: authUser.email ?? null,
           displayName,
           avatarUrl,
+          isCampusVerified,
         },
       });
 

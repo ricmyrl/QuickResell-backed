@@ -2,11 +2,14 @@ import { Router, type Request } from "express";
 import type { User } from "../generated/prisma/client.js";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
+import { createNotification } from "../lib/notifications.js";
 
 const router = Router();
 const maxMessageLength = 4000;
+const allowedMessageTypes = new Set(["GENERAL", "REVIEW", "REPLY"] as const);
 
-router.use(requireSupabaseUser);
+router.use("/conversations", requireSupabaseUser);
+router.use("/listings/:listingId/conversation", requireSupabaseUser);
 
 function currentUser(request: Request): User {
   const user = (request as AuthenticatedRequest).marketplaceUser;
@@ -124,15 +127,73 @@ router.post("/conversations/:conversationId/messages", async (request, response)
     return;
   }
 
+  const messageType = typeof request.body?.type === "string" ? request.body.type.toUpperCase() : "GENERAL";
+  if (!allowedMessageTypes.has(messageType as (typeof allowedMessageTypes extends Set<infer T> ? T : never))) {
+    response.status(400).json({ error: "type must be one of GENERAL, REVIEW, or REPLY." });
+    return;
+  }
+
+  const ratingValue = request.body?.rating;
+  const rating = typeof ratingValue === "number" ? Number(ratingValue) : undefined;
+  if (rating !== undefined && (!Number.isInteger(rating) || rating < 1 || rating > 5)) {
+    response.status(400).json({ error: "rating must be an integer between 1 and 5 when provided." });
+    return;
+  }
+
+  const replyToId = typeof request.body?.replyToId === "string" ? request.body.replyToId : null;
+  if (replyToId && messageType !== "REPLY") {
+    response.status(400).json({ error: "replyToId is only valid for REPLY messages." });
+    return;
+  }
+
+  if (messageType === "REVIEW" && user.id !== access.conversation.buyerId) {
+    response.status(403).json({ error: "Only the buyer can leave a review." });
+    return;
+  }
+
+  if (messageType === "REPLY" && user.id !== access.conversation.sellerId) {
+    response.status(403).json({ error: "Only the seller can reply to a review." });
+    return;
+  }
+
+  if (messageType === "REVIEW" && rating === undefined) {
+    response.status(400).json({ error: "A review must include a 1-5 rating." });
+    return;
+  }
+
+  if (messageType === "REPLY" && !replyToId) {
+    response.status(400).json({ error: "A reply must reference the review it is responding to." });
+    return;
+  }
+
+  if (messageType === "REPLY" && replyToId) {
+    const targetMessage = await prisma.message.findFirst({
+      where: {
+        id: replyToId,
+        conversationId: access.conversation.id,
+      },
+      select: { id: true, type: true, senderId: true },
+    });
+
+    if (!targetMessage || targetMessage.type !== "REVIEW") {
+      response.status(400).json({ error: "replyToId must reference a buyer review in this conversation." });
+      return;
+    }
+  }
+
   const message = await prisma.$transaction(async (transaction) => {
     const created = await transaction.message.create({
       data: {
         conversationId: access.conversation.id,
         senderId: user.id,
         content: content.trim(),
+        type: messageType as "GENERAL" | "REVIEW" | "REPLY",
+        rating,
+        replyToId: replyToId ?? undefined,
       },
       include: {
         sender: { select: { id: true, displayName: true, avatarUrl: true } },
+        replyTo: { select: { id: true, type: true, senderId: true } },
       },
     });
     await transaction.conversation.update({
@@ -141,6 +202,20 @@ router.post("/conversations/:conversationId/messages", async (request, response)
     });
     return created;
   });
+
+  const recipientId = message.type === "REVIEW" ? access.conversation.sellerId : message.type === "REPLY" ? access.conversation.buyerId : null;
+  if (recipientId && recipientId !== user.id) {
+    await createNotification({
+      userId: recipientId,
+      type: message.type === "REVIEW" ? "REVIEW" : "REPLY",
+      title: message.type === "REVIEW" ? "New customer review" : "Seller replied",
+      message: message.type === "REVIEW"
+        ? `${user.displayName ?? "A buyer"} left a ${message.rating ?? 0}-star review.`
+        : `${user.displayName ?? "Your seller"} replied to your review.`,
+      entityType: "conversation",
+      entityId: access.conversation.id,
+    });
+  }
 
   response.status(201).json({ message });
 });
@@ -158,6 +233,7 @@ router.get("/conversations/:conversationId/messages", async (request, response) 
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     include: {
       sender: { select: { id: true, displayName: true, avatarUrl: true } },
+      replyTo: { select: { id: true, type: true, senderId: true } },
     },
   });
 
