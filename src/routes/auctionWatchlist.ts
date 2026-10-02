@@ -3,6 +3,7 @@ import type { AuctionWatchlistItem, User } from "../generated/prisma/client.js";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
 import { processAuctionAutoBid } from "../services/autoBidding.js";
+import { sendScoutWatchlistEmail } from "../services/mail.js";
 
 const router = Router();
 const maxAllowedBid = 10_000_000;
@@ -100,9 +101,23 @@ router.put("/watchlist/auctions/:auctionRoomId", async (request, response) => {
     update: { maxBid, bidStep, autoBidEnabled },
     create: { userId: user.id, auctionRoomId: auctionRoom.id, maxBid, bidStep, autoBidEnabled },
   });
+
+  const emailNotified = user.email && autoBidEnabled
+    ? await sendScoutWatchlistEmail({
+      recipientEmail: user.email,
+      itemTitle: auctionRoom.id ? (await prisma.auctionRoom.findUnique({
+        where: { id: auctionRoom.id },
+        select: { post: { select: { title: true } } },
+      }))?.post.title ?? "your watched item" : "your watched item",
+      maxBid,
+      bidStep,
+      note: `Scout is now watching this auction and will bid on your behalf up to ${maxBid}. Review the rule in the Watchlist anytime.`,
+    })
+    : false;
+
   const result = autoBidEnabled ? await processAuctionAutoBid(auctionRoom.id) : null;
   const currentItem = await prisma.auctionWatchlistItem.findUniqueOrThrow({ where: { id: item.id } });
-  response.status(200).json({ item: await includeAuction(currentItem), autoBidPlaced: Boolean(result?.bid) });
+  response.status(200).json({ item: await includeAuction(currentItem), autoBidPlaced: Boolean(result?.bid), emailNotified });
 });
 
 router.delete("/watchlist/auctions/:auctionRoomId", async (request, response) => {

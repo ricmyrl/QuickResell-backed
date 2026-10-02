@@ -1,5 +1,6 @@
 import type { AuctionRoom, Bid, Prisma } from "../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
+import { sendScoutWatchlistEmail } from "./mail.js";
 
 const antiSnipeWindowMs = 10_000;
 const antiSnipeExtensionMs = 30_000;
@@ -97,6 +98,21 @@ export async function processAuctionAutoBid(auctionRoomId: string): Promise<Auto
       select: { title: true },
     });
     const title = auctionTitle?.title ?? "auction";
+
+    const bidder = await transaction.user.findUnique({
+      where: { id: nextBidder.userId },
+      select: { email: true },
+    });
+
+    if (bidder?.email) {
+      await sendScoutWatchlistEmail({
+        recipientEmail: bidder.email,
+        itemTitle: title,
+        maxBid: nextBidder.maxBid,
+        bidStep: nextBidder.bidStep,
+        note: `Scout just placed a bid of $${proposedAmount.toFixed(2)} on your watched item. Your watchlist rule remains active until your maximum is reached.`,
+      });
+    }
 
     const notifications = [
       ...(room.highestBidderId && room.highestBidderId !== nextBidder.userId

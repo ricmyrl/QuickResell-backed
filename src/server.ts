@@ -9,6 +9,7 @@ import conversationsRouter from "./routes/conversations.js";
 import marketplaceRouter from "./routes/marketplace.js";
 import notificationsRouter from "./routes/notifications.js";
 import paymentsRouter from "./routes/payments.js";
+import scoutRouter from "./routes/scout.js";
 
 const requiredEnvironment = ["SUPABASE_URL"];
 if (!process.env.DATABASE_URL && !process.env.DIRECT_URL) {
@@ -60,6 +61,7 @@ app.use("/api", auctionWatchlistRouter);
 app.use("/api", marketplaceRouter);
 app.use("/api", notificationsRouter);
 app.use("/api", conversationsRouter);
+app.use("/api", scoutRouter);
 app.use("/api", cartRouter);
 app.use("/api", paymentsRouter);
 app.use("/api", auctionsRouter);

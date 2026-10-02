@@ -115,3 +115,99 @@ export async function sendAuctionWonEmail(
     throw error;
   }
 }
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[character] ?? character);
+}
+
+export async function sendScoutSupportEmail({
+  requestId,
+  customerEmail,
+  category,
+  message,
+}: {
+  requestId: string;
+  customerEmail: string | null;
+  category: string;
+  message: string;
+}): Promise<boolean> {
+  const recipient = process.env.SCOUT_SUPPORT_EMAIL?.trim();
+  if (!recipient) return false;
+
+  const clientConfig = getMailgunClient();
+  if (!clientConfig) return false;
+
+  const safeMessage = message.trim().slice(0, 2000);
+  try {
+    await clientConfig.client.messages.create(clientConfig.domain, {
+      from: `Quick Resell Support <support@${clientConfig.domain}>`,
+      to: [recipient],
+      subject: `Scout support request ${requestId}`,
+      text: `Request: ${requestId}\nCategory: ${category}\nCustomer: ${customerEmail ?? "Unavailable"}\n\n${safeMessage}`,
+      html: `<p><strong>Request:</strong> ${escapeHtml(requestId)}</p><p><strong>Category:</strong> ${escapeHtml(category)}</p><p><strong>Customer:</strong> ${escapeHtml(customerEmail ?? "Unavailable")}</p><pre style="white-space:pre-wrap;font:14px/1.5 sans-serif">${escapeHtml(safeMessage)}</pre>`,
+    });
+    return true;
+  } catch (error) {
+    console.error("Failed to notify the configured Scout support inbox.", {
+      requestId,
+      error,
+    });
+    return false;
+  }
+}
+
+export async function sendScoutWatchlistEmail({
+  recipientEmail,
+  itemTitle,
+  maxBid,
+  bidStep,
+  note,
+}: {
+  recipientEmail: string;
+  itemTitle: string;
+  maxBid: number;
+  bidStep: number;
+  note: string;
+}): Promise<boolean> {
+  const clientConfig = getMailgunClient();
+  if (!clientConfig) return false;
+
+  const cleanTitle = itemTitle.trim().replace(/\s+/g, " ").slice(0, 120) || "your watched item";
+  const subject = `Scout watchlist update: ${cleanTitle}`;
+  const text = `Scout has updated your watchlist for "${cleanTitle}". Max bid: ${formatCurrency(maxBid)}. Bid step: ${formatCurrency(bidStep)}. ${note}`;
+
+  try {
+    await clientConfig.client.messages.create(clientConfig.domain, {
+      from: `Quick Resell Scout <scout@${clientConfig.domain}>`,
+      to: [recipientEmail],
+      subject,
+      text,
+      html: `
+        <div style="font-family:Arial,Helvetica,sans-serif; color:#1d2a25; line-height:1.6;">
+          <h2 style="margin:0 0 12px; color:#203c32;">Scout watchlist update</h2>
+          <p style="margin:0 0 12px;"><strong>Item:</strong> ${escapeHtml(cleanTitle)}</p>
+          <p style="margin:0 0 12px;"><strong>Max bid:</strong> ${escapeHtml(formatCurrency(maxBid))}</p>
+          <p style="margin:0 0 12px;"><strong>Bid step:</strong> ${escapeHtml(formatCurrency(bidStep))}</p>
+          <p style="margin:0;">${escapeHtml(note)}</p>
+        </div>
+      `,
+    });
+    return true;
+  } catch (error) {
+    console.error("Failed to send Scout watchlist email.", {
+      recipientEmail,
+      itemTitle,
+      maxBid,
+      bidStep,
+      note,
+      error,
+    });
+    return false;
+  }
+}

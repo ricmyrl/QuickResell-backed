@@ -75,6 +75,8 @@ model User {
   cartItems             CartItem[]
   watchlistItems        WatchlistItem[]
   auctionWatchlistItems AuctionWatchlistItem[]
+  scoutFeedback        ScoutFeedback[]
+  supportRequests      SupportRequest[]
   purchaseOrders        PurchaseOrder[]
   soldOrderItems         PurchaseOrderItem[]
 }
@@ -252,6 +254,33 @@ model AuctionWatchlistItem {
 
   @@unique([userId, auctionRoomId])
   @@index([autoBidEnabled, updatedAt])
+}
+
+model ScoutFeedback {
+  id        String   @id @default(cuid())
+  userId    String   @db.Uuid
+  messageId String
+  intent    String?
+  helpful   Boolean
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, messageId])
+  @@index([intent, helpful, createdAt])
+}
+
+model SupportRequest {
+  id        String   @id @default(cuid())
+  userId    String   @db.Uuid
+  category  String
+  message   String   @db.Text
+  status    String   @default("OPEN")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
 }
 
 model PurchaseOrder {
