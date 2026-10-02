@@ -6,6 +6,7 @@ import auctionsRouter, { finalizeExpiredAuctions } from "./routes/auctions.js";
 import auctionWatchlistRouter from "./routes/auctionWatchlist.js";
 import cartRouter from "./routes/cart.js";
 import conversationsRouter from "./routes/conversations.js";
+import currencyRouter from "./routes/currency.js";
 import marketplaceRouter from "./routes/marketplace.js";
 import notificationsRouter from "./routes/notifications.js";
 import paymentsRouter from "./routes/payments.js";
@@ -70,6 +71,7 @@ app.use(cors({
 app.use(express.json({ limit: "64kb" }));
 
 app.get("/health", (_request, response) => response.json({ status: "ok" }));
+app.use("/api", currencyRouter);
 app.use("/api", auctionWatchlistRouter);
 app.use("/api", marketplaceRouter);
 app.use("/api", notificationsRouter);

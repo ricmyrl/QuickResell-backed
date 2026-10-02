@@ -3,6 +3,7 @@ import axios from "axios";
 import { Router } from "express";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
+import { usdToNgnKobo } from "../services/exchangeRates.js";
 
 const router = Router();
 
@@ -43,9 +44,17 @@ router.post("/payments/initialize", async (request, response) => {
     return;
   }
 
-  const amountCents = cartItems.reduce((total, { post, quantity }) => total + Math.round(post.price * 100) * quantity, 0);
-  if (!Number.isSafeInteger(amountCents) || amountCents <= 0) {
+  const subtotalUsd = cartItems.reduce((total, { post, quantity }) => total + Math.round(post.price * 100) * quantity, 0) / 100;
+  if (!Number.isFinite(subtotalUsd) || subtotalUsd <= 0) {
     response.status(409).json({ error: "The cart total is invalid." });
+    return;
+  }
+
+  let amountCents: number;
+  try {
+    amountCents = await usdToNgnKobo(subtotalUsd);
+  } catch {
+    response.status(503).json({ error: "Payment is temporarily unavailable because exchange rates could not be loaded." });
     return;
   }
 
@@ -72,7 +81,8 @@ router.post("/payments/initialize", async (request, response) => {
         reference,
         metadata: {
           userId: buyer.id,
-          cartSubtotalCents: amountCents,
+          cartSubtotalUsdCents: Math.round(subtotalUsd * 100),
+          paymentAmountKobo: amountCents,
         },
       },
       {
@@ -95,6 +105,7 @@ router.post("/payments/initialize", async (request, response) => {
       access_code: data.access_code,
       reference: data.reference,
       amountCents,
+      currency: "NGN",
     });
   } catch (error: unknown) {
     const message = axios.isAxiosError(error) ? error.response?.data?.message ?? error.message : "Failed to initialize Paystack payment.";

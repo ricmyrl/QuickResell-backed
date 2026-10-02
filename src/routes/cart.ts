@@ -41,7 +41,7 @@ function isAvailable(post: Post & { auctionRoom?: { status: string } | null }, u
   return post.status === "ACTIVE" && post.sellerId !== userId && !roomUnavailable && post.quantityAvailable >= quantity;
 }
 
-async function verifyPaystackReference(reference: string, expectedAmountCents: number, buyerId: string): Promise<void> {
+async function verifyPaystackReference(reference: string, expectedSubtotalUsdCents: number, buyerId: string): Promise<void> {
   const secretKey = process.env.PAYSTACK_SECRET_KEY;
   if (!secretKey) throw new CartError("PAYSTACK_SECRET_KEY is not configured.", 500);
 
@@ -55,7 +55,9 @@ async function verifyPaystackReference(reference: string, expectedAmountCents: n
       throw new CartError("Payment verification failed or the transaction is not complete.", 402);
     }
 
-    if (Number(transaction.amount) !== expectedAmountCents) {
+    const initializedAmountKobo = Number(transaction.metadata?.paymentAmountKobo);
+    const initializedSubtotalUsdCents = Number(transaction.metadata?.cartSubtotalUsdCents);
+    if (initializedSubtotalUsdCents !== expectedSubtotalUsdCents || !Number.isSafeInteger(initializedAmountKobo) || Number(transaction.amount) !== initializedAmountKobo) {
       throw new CartError("The payment amount does not match the order total.", 402);
     }
   } catch (error) {
