@@ -4,7 +4,9 @@
 
 `User.id` stores the UUID from Supabase Auth. The API verifies each bearer token with Supabase and upserts a local `User` row before handling marketplace requests. Prisma foreign keys then relate listings to that local user row; the request body never chooses the seller ID.
 
-Create a public Supabase Storage bucket named `listing-images`. Restrict uploads to each authenticated user's UUID folder with a Storage policy such as:
+The `20261002143000_create_listing_images_bucket` migration creates the public `listing-images` bucket, limits files to 10 MB and supported image types, and restricts authenticated uploads/deletes to each user's UUID folder. Run `npm run db:migrate:deploy` to provision it in Supabase.
+
+Public reads are enabled so listing image URLs work on the marketplace. The upload policy is:
 
 ```sql
 create policy "Users upload listing images to their own folder"
