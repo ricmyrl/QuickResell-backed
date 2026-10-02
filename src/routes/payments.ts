@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import axios from "axios";
 import { Router } from "express";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
+import { prisma } from "../lib/prisma.js";
 
 const router = Router();
 
@@ -8,19 +10,46 @@ router.use("/payments", requireSupabaseUser, requireConfirmedEmail);
 
 router.post("/payments/initialize", async (request, response) => {
   const buyer = (request as AuthenticatedRequest).marketplaceUser;
-  const { amount, email, metadata } = request.body ?? {};
-
   if (!buyer) {
     response.status(401).json({ error: "Unauthorized." });
     return;
   }
 
-  if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
-    response.status(400).json({ error: "amount must be a positive number." });
+  const cartItems = await prisma.cartItem.findMany({
+    where: { userId: buyer.id },
+    include: {
+      post: {
+        select: {
+          price: true,
+          quantityAvailable: true,
+          sellerId: true,
+          status: true,
+          auctionRoom: { select: { status: true } },
+        },
+      },
+    },
+  });
+  if (cartItems.length === 0) {
+    response.status(400).json({ error: "Your cart is empty." });
     return;
   }
 
-  const paystackEmail = typeof email === "string" && email.trim().length > 0 ? email.trim() : buyer.email ?? null;
+  const unavailableItem = cartItems.some(({ post, quantity }) =>
+    post.status !== "ACTIVE" || post.sellerId === buyer.id || post.quantityAvailable < quantity ||
+    (post.auctionRoom !== null && post.auctionRoom.status !== "CLOSED")
+  );
+  if (unavailableItem) {
+    response.status(409).json({ error: "A cart item is no longer available. Refresh your cart and try again." });
+    return;
+  }
+
+  const amountCents = cartItems.reduce((total, { post, quantity }) => total + Math.round(post.price * 100) * quantity, 0);
+  if (!Number.isSafeInteger(amountCents) || amountCents <= 0) {
+    response.status(409).json({ error: "The cart total is invalid." });
+    return;
+  }
+
+  const paystackEmail = buyer.email;
   if (!paystackEmail) {
     response.status(400).json({ error: "A valid email is required to initialize payment." });
     return;
@@ -32,18 +61,18 @@ router.post("/payments/initialize", async (request, response) => {
     return;
   }
 
-  const reference = `QR-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const reference = `QR-${randomUUID()}`;
   try {
     const paystackResponse = await axios.post(
       "https://api.paystack.co/transaction/initialize",
       {
         email: paystackEmail,
-        amount: Math.round(amount * 100),
+        amount: amountCents,
         currency: "NGN",
         reference,
         metadata: {
           userId: buyer.id,
-          ...(metadata ?? {}),
+          cartSubtotalCents: amountCents,
         },
       },
       {
@@ -65,6 +94,7 @@ router.post("/payments/initialize", async (request, response) => {
       authorization_url: data.authorization_url,
       access_code: data.access_code,
       reference: data.reference,
+      amountCents,
     });
   } catch (error: unknown) {
     const message = axios.isAxiosError(error) ? error.response?.data?.message ?? error.message : "Failed to initialize Paystack payment.";
@@ -73,6 +103,12 @@ router.post("/payments/initialize", async (request, response) => {
 });
 
 router.get("/payments/verify/:reference", async (request, response) => {
+    const buyer = (request as AuthenticatedRequest).marketplaceUser;
+    if (!buyer) {
+      response.status(401).json({ error: "Unauthorized." });
+      return;
+    }
+
   const secretKey = process.env.PAYSTACK_SECRET_KEY;
   if (!secretKey) {
     response.status(500).json({ error: "PAYSTACK_SECRET_KEY is not configured." });
@@ -101,8 +137,8 @@ router.get("/payments/verify/:reference", async (request, response) => {
       return;
     }
 
-    if (data.status !== "success") {
-      response.status(400).json({ error: "Payment is not yet successful." });
+    if (data.status !== "success" || data.reference !== reference || data.currency !== "NGN" || data.metadata?.userId !== buyer.id) {
+      response.status(400).json({ error: "Payment could not be verified for this account." });
       return;
     }
 

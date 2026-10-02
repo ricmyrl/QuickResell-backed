@@ -41,7 +41,7 @@ function isAvailable(post: Post & { auctionRoom?: { status: string } | null }, u
   return post.status === "ACTIVE" && post.sellerId !== userId && !roomUnavailable && post.quantityAvailable >= quantity;
 }
 
-async function verifyPaystackReference(reference: string, expectedAmountCents: number): Promise<void> {
+async function verifyPaystackReference(reference: string, expectedAmountCents: number, buyerId: string): Promise<void> {
   const secretKey = process.env.PAYSTACK_SECRET_KEY;
   if (!secretKey) throw new CartError("PAYSTACK_SECRET_KEY is not configured.", 500);
 
@@ -51,11 +51,11 @@ async function verifyPaystackReference(reference: string, expectedAmountCents: n
     });
     const transaction = response.data?.data;
 
-    if (!transaction || transaction.status !== "success") {
+    if (!transaction || transaction.status !== "success" || transaction.reference !== reference || transaction.currency !== "NGN" || transaction.metadata?.userId !== buyerId) {
       throw new CartError("Payment verification failed or the transaction is not complete.", 402);
     }
 
-    if (Number.isFinite(expectedAmountCents) && expectedAmountCents > 0 && Number(transaction.amount) !== expectedAmountCents) {
+    if (Number(transaction.amount) !== expectedAmountCents) {
       throw new CartError("The payment amount does not match the order total.", 402);
     }
   } catch (error) {
@@ -177,7 +177,12 @@ router.delete("/cart/items/:postId", async (request, response) => {
 router.use("/cart/checkout", requireConfirmedEmail);
 router.post("/cart/checkout", async (request, response) => {
   const buyer = currentUser(request);
-  const { paymentReference } = request.body ?? {};
+  const paymentReference = request.body?.paymentReference;
+  if (typeof paymentReference !== "string" || paymentReference.trim().length < 8 || paymentReference.length > 100) {
+    response.status(400).json({ error: "A valid payment reference is required to check out." });
+    return;
+  }
+  const normalizedPaymentReference = paymentReference.trim();
   let order;
   try {
     order = await prisma.$transaction(async (transaction) => {
@@ -187,6 +192,8 @@ router.post("/cart/checkout", async (request, response) => {
       await transaction.$queryRaw<Array<{ id: string }>>`
         SELECT "id" FROM "CartItem" WHERE "userId" = ${buyer.id}::uuid ORDER BY "postId" FOR UPDATE
       `;
+      const existingOrder = await transaction.purchaseOrder.findUnique({ where: { paymentReference: normalizedPaymentReference } });
+      if (existingOrder) throw new CartError("This payment has already been used.", 409);
       const cartItems = await transaction.cartItem.findMany({
         where: { userId: buyer.id },
         orderBy: { postId: "asc" },
@@ -216,13 +223,12 @@ router.post("/cart/checkout", async (request, response) => {
       const subtotalCents = purchaseLines.reduce((sum, line) => sum + line.quantity * line.unitPriceCents, 0);
       if (!Number.isSafeInteger(subtotalCents)) throw new CartError("The order total is too large to process.", 400);
 
-      if (typeof paymentReference === "string" && paymentReference.trim().length > 0) {
-        await verifyPaystackReference(paymentReference, subtotalCents);
-      }
+      await verifyPaystackReference(normalizedPaymentReference, subtotalCents, buyer.id);
 
       const createdOrder = await transaction.purchaseOrder.create({
         data: {
           buyerId: buyer.id,
+          paymentReference: normalizedPaymentReference,
           subtotalCents,
           items: { create: purchaseLines.map(({ post, quantity, unitPriceCents }) => ({
             postId: post.id,

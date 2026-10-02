@@ -23,17 +23,30 @@ if (!process.env.SUPABASE_ANON_KEY && !process.env.SUPABASE_PUBLISHABLE_KEY) {
 }
 
 const app = express();
-const allowedOrigins = (process.env.FRONTEND_URL ?? "http://localhost:5173")
+const isProduction = process.env.NODE_ENV === "production";
+const frontendUrl = process.env.FRONTEND_URL ?? (isProduction ? "" : "http://localhost:5173");
+if (isProduction && !frontendUrl.trim()) {
+  throw new Error("FRONTEND_URL must be configured in production.");
+}
+const allowedOrigins = frontendUrl
   .split(",")
   .map((origin) => origin.trim())
-  .filter(Boolean);
+  .filter(Boolean)
+  .map((origin) => {
+    const parsed = new URL(origin);
+    if (isProduction && parsed.protocol !== "https:") {
+      throw new Error("FRONTEND_URL origins must use HTTPS in production.");
+    }
+    return parsed.origin;
+  });
 
 function isAllowedOrigin(origin: string | undefined): boolean {
   if (!origin) return true;
 
   try {
     const parsed = new URL(origin);
-    if (allowedOrigins.includes(origin)) return true;
+    if (allowedOrigins.includes(parsed.origin)) return true;
+    if (isProduction) return false;
     const hostname = parsed.hostname.toLowerCase();
     if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0") return true;
     if (hostname.startsWith("10.33.121.") || hostname.startsWith("192.168.") || hostname.startsWith("172.")) return true;

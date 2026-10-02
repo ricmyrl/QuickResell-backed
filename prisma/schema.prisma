@@ -284,14 +284,15 @@ model SupportRequest {
 }
 
 model PurchaseOrder {
-  id          String               @id @default(cuid())
-  buyerId     String               @db.Uuid
-  status      PurchaseOrderStatus  @default(PENDING_HANDOFF)
-  subtotalCents Int
-  createdAt   DateTime             @default(now())
-  updatedAt   DateTime             @updatedAt
-  buyer       User                 @relation(fields: [buyerId], references: [id], onDelete: Restrict)
-  items       PurchaseOrderItem[]
+  id               String               @id @default(cuid())
+  buyerId          String               @db.Uuid
+  paymentReference String?              @unique
+  status           PurchaseOrderStatus  @default(PENDING_HANDOFF)
+  subtotalCents    Int
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  buyer            User                 @relation(fields: [buyerId], references: [id], onDelete: Restrict)
+  items            PurchaseOrderItem[]
 
   @@index([buyerId, createdAt])
   @@index([status, createdAt])

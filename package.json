@@ -5,10 +5,12 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "start": "tsx src/server.ts",
+    "start": "node dist/src/server.js",
+    "build": "npm run prisma:generate && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
     "db:seed": "prisma db seed"
   },
   "keywords": [],
