@@ -65,6 +65,8 @@ model User {
   createdAt             DateTime       @default(now())
   updatedAt             DateTime       @updatedAt
   posts                 Post[]
+  productComments      ProductComment[]
+  productCommentReactions ProductCommentReaction[]
   buyerConversations    Conversation[] @relation("ConversationBuyer")
   sellerConversations   Conversation[] @relation("ConversationSeller")
   sentMessages          Message[]
@@ -97,6 +99,8 @@ model Post {
   price          Float
   originalPrice  Float?
   locationCampus String?
+  latitude       Float?
+  longitude      Float?
   embedding      Json?
   status         ListingStatus  @default(ACTIVE)
   createdAt      DateTime       @default(now())
@@ -110,10 +114,42 @@ model Post {
   cartItems      CartItem[]
   watchlistItems WatchlistItem[]
   purchaseOrderItems PurchaseOrderItem[]
+  comments       ProductComment[]
 
   @@index([status, createdAt])
   @@index([categoryId, status])
   @@index([sellerId, status])
+}
+
+model ProductComment {
+  id        String   @id @default(cuid())
+  postId    String
+  userId    String   @db.Uuid
+  parentId  String?
+  content   String   @db.VarChar(1000)
+  createdAt DateTime @default(now())
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent    ProductComment? @relation("ProductCommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies   ProductComment[] @relation("ProductCommentReplies")
+  reactions ProductCommentReaction[]
+
+  @@index([postId, createdAt])
+  @@index([userId, createdAt])
+  @@index([parentId, createdAt])
+}
+
+model ProductCommentReaction {
+  id        String   @id @default(cuid())
+  commentId String
+  userId    String   @db.Uuid
+  type      String   @default("LIKE")
+  createdAt DateTime @default(now())
+  comment   ProductComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, userId])
+  @@index([userId, createdAt])
 }
 
 model ListingImage {

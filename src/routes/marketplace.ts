@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import type { User } from "../generated/prisma/client.js";
-import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
+import { optionalSupabaseUser, requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
 import { createNotificationsForUsers } from "../lib/notifications.js";
 import { createMarketplaceScorer, type MarketplaceFeedType } from "../../servies/marketRecomendationService.js";
@@ -49,9 +49,72 @@ router.get("/store", async (_request, response) => {
       category: true,
       images: { orderBy: { sortOrder: "asc" } },
       user: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true, completedAuctions: true, isCampusVerified: true } },
+      _count: { select: { comments: true } },
     },
   });
   response.json({ items });
+});
+
+router.get("/listings/:listingId/comments", optionalSupabaseUser, async (request, response) => {
+  const listingId = request.params.listingId;
+  if (typeof listingId !== "string") {
+    response.status(400).json({ error: "A valid product ID is required." });
+    return;
+  }
+  const viewerId = (request as AuthenticatedRequest).marketplaceUser?.id;
+  const listing = await prisma.post.findFirst({
+    where: {
+      id: listingId,
+      status: "ACTIVE",
+      quantityAvailable: { gt: 0 },
+      auctionRoom: { is: null },
+    },
+    include: {
+      _count: { select: { comments: true } },
+      comments: {
+        where: { parentId: null },
+        orderBy: { createdAt: "asc" },
+        take: 100,
+        include: {
+          user: { select: { id: true, displayName: true, avatarUrl: true } },
+          _count: { select: { reactions: true } },
+          reactions: viewerId ? { where: { userId: viewerId }, select: { id: true } } : { take: 0, select: { id: true } },
+          replies: {
+            orderBy: { createdAt: "asc" },
+            include: {
+              user: { select: { id: true, displayName: true, avatarUrl: true } },
+              _count: { select: { reactions: true } },
+              reactions: viewerId ? { where: { userId: viewerId }, select: { id: true } } : { take: 0, select: { id: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!listing) {
+    response.status(404).json({ error: "Product not found." });
+    return;
+  }
+
+  const formatComment = (comment: typeof listing.comments[number]) => ({
+    id: comment.id,
+    content: comment.content,
+    createdAt: comment.createdAt,
+    user: comment.user,
+    likeCount: comment._count.reactions,
+    likedByMe: comment.reactions.length > 0,
+    replies: comment.replies.map((reply) => ({
+        id: reply.id,
+        content: reply.content,
+        createdAt: reply.createdAt,
+        user: reply.user,
+        likeCount: reply._count.reactions,
+        likedByMe: reply.reactions.length > 0,
+        replies: [],
+      })),
+  });
+  response.json({ items: listing.comments.map(formatComment), commentsCount: listing._count.comments });
 });
 
 router.use("/feed", requireSupabaseUser);
@@ -104,6 +167,109 @@ router.get("/feed", async (request, response) => {
 });
 
 router.use("/listings", requireSupabaseUser, requireConfirmedEmail);
+router.post("/listings/:listingId/comments", async (request, response) => {
+  const user = currentUser(request);
+  const listingId = request.params.listingId;
+  if (typeof listingId !== "string") {
+    response.status(400).json({ error: "A valid product ID is required." });
+    return;
+  }
+  const content = request.body?.content;
+  const parentId = request.body?.parentId;
+  if (typeof content !== "string" || !content.trim() || content.trim().length > 1000) {
+    response.status(400).json({ error: "Comment is required and must be at most 1000 characters." });
+    return;
+  }
+
+  const listing = await prisma.post.findFirst({
+    where: {
+      id: listingId,
+      status: "ACTIVE",
+      quantityAvailable: { gt: 0 },
+      auctionRoom: { is: null },
+    },
+    select: { id: true },
+  });
+  if (!listing) {
+    response.status(404).json({ error: "Product not found." });
+    return;
+  }
+
+  if (parentId !== undefined && (typeof parentId !== "string" || !await prisma.productComment.findFirst({
+    where: { id: parentId, postId: listing.id, parentId: null },
+    select: { id: true },
+  }))) {
+    response.status(400).json({ error: "Replies must reference a top-level comment on this product." });
+    return;
+  }
+
+  const comment = await prisma.productComment.create({
+    data: { postId: listing.id, userId: user.id, content: content.trim(), ...(parentId ? { parentId } : {}) },
+    include: { user: { select: { id: true, displayName: true, avatarUrl: true } } },
+  });
+  const commentsCount = await prisma.productComment.count({ where: { postId: listing.id } });
+  response.status(201).json({
+    comment: { ...comment, likeCount: 0, likedByMe: false, replies: [] },
+    commentsCount,
+  });
+});
+
+router.post("/listings/:listingId/comments/:commentId/reaction", async (request, response) => {
+  const user = currentUser(request);
+  const { listingId, commentId } = request.params;
+  if (typeof listingId !== "string" || typeof commentId !== "string") {
+    response.status(400).json({ error: "Valid product and comment IDs are required." });
+    return;
+  }
+  const comment = await prisma.productComment.findFirst({
+    where: {
+      id: commentId,
+      postId: listingId,
+      post: {
+        status: "ACTIVE",
+        quantityAvailable: { gt: 0 },
+        auctionRoom: { is: null },
+      },
+    },
+    select: { id: true },
+  });
+  if (!comment) {
+    response.status(404).json({ error: "Comment not found." });
+    return;
+  }
+
+  await prisma.productCommentReaction.upsert({
+    where: { commentId_userId: { commentId: comment.id, userId: user.id } },
+    create: { commentId: comment.id, userId: user.id, type: "LIKE" },
+    update: { type: "LIKE" },
+  });
+  const likeCount = await prisma.productCommentReaction.count({ where: { commentId: comment.id } });
+  response.json({ liked: true, likeCount });
+});
+
+router.delete("/listings/:listingId/comments/:commentId/reaction", async (request, response) => {
+  const user = currentUser(request);
+  const { listingId, commentId } = request.params;
+  if (typeof listingId !== "string" || typeof commentId !== "string") {
+    response.status(400).json({ error: "Valid product and comment IDs are required." });
+    return;
+  }
+  const comment = await prisma.productComment.findFirst({
+    where: { id: commentId, postId: listingId },
+    select: { id: true },
+  });
+  if (!comment) {
+    response.status(404).json({ error: "Comment not found." });
+    return;
+  }
+
+  await prisma.productCommentReaction.deleteMany({
+    where: { commentId: comment.id, userId: user.id },
+  });
+  const likeCount = await prisma.productCommentReaction.count({ where: { commentId: comment.id } });
+  response.json({ liked: false, likeCount });
+});
+
 router.get("/listings/mine", async (request, response) => {
   const seller = currentUser(request);
   const items = await prisma.post.findMany({
@@ -161,7 +327,7 @@ router.delete("/watchlist/:listingId", async (request, response) => {
 
 router.post("/listings", async (request, response) => {
   const seller = currentUser(request);
-  const { title, description, categoryId, price, originalPrice, locationCampus, imageUrls, quantityAvailable = 1 } = request.body ?? {};
+  const { title, description, categoryId, price, originalPrice, locationCampus, latitude, longitude, imageUrls, quantityAvailable = 1 } = request.body ?? {};
 
   if (typeof title !== "string" || !title.trim() || title.trim().length > 120) {
     response.status(400).json({ error: "title is required and must be at most 120 characters." });
@@ -194,6 +360,14 @@ router.post("/listings", async (request, response) => {
     response.status(400).json({ error: "locationCampus must be at most 120 characters." });
     return;
   }
+  const hasNoCoordinates = (latitude === undefined || latitude === null) &&
+    (longitude === undefined || longitude === null);
+  const hasValidCoordinates = typeof latitude === "number" && Number.isFinite(latitude) && latitude >= -90 && latitude <= 90 &&
+    typeof longitude === "number" && Number.isFinite(longitude) && longitude >= -180 && longitude <= 180;
+  if (!hasNoCoordinates && !hasValidCoordinates) {
+    response.status(400).json({ error: "latitude and longitude must be valid coordinates supplied together." });
+    return;
+  }
   if (!Array.isArray(imageUrls) || imageUrls.length < 1 || imageUrls.length > maxListingImages ||
       !imageUrls.every((url) => isOwnedStorageUrl(url, seller.id))) {
     response.status(400).json({
@@ -218,6 +392,8 @@ router.post("/listings", async (request, response) => {
       quantityAvailable,
       originalPrice: originalPrice ?? null,
       locationCampus: typeof locationCampus === "string" ? locationCampus.trim() || null : null,
+      latitude: hasValidCoordinates ? Number(latitude.toFixed(3)) : null,
+      longitude: hasValidCoordinates ? Number(longitude.toFixed(3)) : null,
       images: {
         create: imageUrls.map((url: string, sortOrder: number) => ({ url, sortOrder })),
       },
@@ -253,6 +429,9 @@ router.put("/listings/:listingId", async (request, response) => {
 
   const nextPrice = request.body?.price;
   const nextOriginalPrice = request.body?.originalPrice;
+  const nextLatitude = request.body?.latitude;
+  const nextLongitude = request.body?.longitude;
+  const isUpdatingCoordinates = nextLatitude !== undefined || nextLongitude !== undefined;
   if (nextPrice !== undefined && (typeof nextPrice !== "number" || !Number.isFinite(nextPrice) || nextPrice < 0)) {
     response.status(400).json({ error: "price must be a non-negative number." });
     return;
@@ -262,12 +441,22 @@ router.put("/listings/:listingId", async (request, response) => {
     response.status(400).json({ error: "originalPrice must be a number greater than or equal to price." });
     return;
   }
+  if (isUpdatingCoordinates &&
+      (typeof nextLatitude !== "number" || !Number.isFinite(nextLatitude) || nextLatitude < -90 || nextLatitude > 90 ||
+       typeof nextLongitude !== "number" || !Number.isFinite(nextLongitude) || nextLongitude < -180 || nextLongitude > 180)) {
+    response.status(400).json({ error: "latitude and longitude must be valid coordinates supplied together." });
+    return;
+  }
 
   const updatedListing = await prisma.post.update({
     where: { id: listing.id },
     data: {
       ...(nextPrice !== undefined ? { price: nextPrice } : {}),
       ...(nextOriginalPrice !== undefined ? { originalPrice: nextOriginalPrice ?? null } : {}),
+      ...(isUpdatingCoordinates ? {
+        latitude: Number(nextLatitude.toFixed(3)),
+        longitude: Number(nextLongitude.toFixed(3)),
+      } : {}),
     },
     include: {
       category: true,

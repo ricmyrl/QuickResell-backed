@@ -102,6 +102,18 @@ export async function requireSupabaseUser(
   }
 }
 
+export async function optionalSupabaseUser(
+  request: Request,
+  response: Response,
+  next: NextFunction,
+): Promise<void> {
+  if (!request.header("authorization")) {
+    next();
+    return;
+  }
+  await requireSupabaseUser(request, response, next);
+}
+
 export function requireConfirmedEmail(
   request: Request,
   response: Response,
