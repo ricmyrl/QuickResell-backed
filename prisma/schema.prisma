@@ -49,6 +49,15 @@ enum NotificationType {
   ORDER_UPDATE
 }
 
+enum ListingReactionType {
+  LIKE
+  LOVE
+  HAHA
+  WOW
+  SAD
+  ANGRY
+}
+
 model User {
   id                    String         @id @db.Uuid
   email                 String?        @unique
@@ -67,6 +76,7 @@ model User {
   posts                 Post[]
   productComments      ProductComment[]
   productCommentReactions ProductCommentReaction[]
+  listingReactions     ListingReaction[]
   buyerConversations    Conversation[] @relation("ConversationBuyer")
   sellerConversations   Conversation[] @relation("ConversationSeller")
   sentMessages          Message[]
@@ -115,6 +125,7 @@ model Post {
   watchlistItems WatchlistItem[]
   purchaseOrderItems PurchaseOrderItem[]
   comments       ProductComment[]
+  listingReactions ListingReaction[]
 
   @@index([status, createdAt])
   @@index([categoryId, status])
@@ -149,6 +160,20 @@ model ProductCommentReaction {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([commentId, userId])
+  @@index([userId, createdAt])
+}
+
+model ListingReaction {
+  id        String              @id @default(cuid())
+  postId    String
+  userId    String              @db.Uuid
+  type      ListingReactionType
+  createdAt DateTime            @default(now())
+  post      Post                @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId])
+  @@index([postId, type])
   @@index([userId, createdAt])
 }
 

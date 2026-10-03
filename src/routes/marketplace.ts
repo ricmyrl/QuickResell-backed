@@ -1,5 +1,6 @@
 import { Router, type Request } from "express";
 import type { User } from "../generated/prisma/client.js";
+import { ListingReactionType } from "../generated/prisma/client.js";
 import { optionalSupabaseUser, requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
 import { createNotificationsForUsers } from "../lib/notifications.js";
@@ -47,7 +48,8 @@ router.get("/categories", async (_request, response) => {
   response.json({ categories });
 });
 
-router.get("/store", async (_request, response) => {
+router.get("/store", optionalSupabaseUser, async (request, response) => {
+  const viewerId = (request as AuthenticatedRequest).marketplaceUser?.id;
   const items = await prisma.post.findMany({
     where: {
       status: "ACTIVE",
@@ -60,10 +62,61 @@ router.get("/store", async (_request, response) => {
       category: true,
       images: { orderBy: { sortOrder: "asc" } },
       user: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true, completedAuctions: true, isCampusVerified: true } },
-      _count: { select: { comments: true } },
+      _count: { select: { comments: true, listingReactions: true } },
+      listingReactions: viewerId
+        ? { where: { userId: viewerId }, select: { type: true } }
+        : { take: 0, select: { type: true } },
     },
   });
   response.json({ items });
+});
+
+router.post("/listings/:listingId/reaction", requireSupabaseUser, requireConfirmedEmail, async (request, response) => {
+  const user = currentUser(request);
+  const listingId = request.params.listingId;
+  const type = request.body?.type;
+  if (typeof listingId !== "string" || typeof type !== "string" ||
+      !Object.values(ListingReactionType).includes(type as ListingReactionType)) {
+    response.status(400).json({ error: "type must be one of LIKE, LOVE, HAHA, WOW, SAD, or ANGRY." });
+    return;
+  }
+  const post = await prisma.post.findFirst({
+    where: { id: listingId, ...publicDiscussionPostWhere() },
+    select: { id: true },
+  });
+  if (!post) {
+    response.status(404).json({ error: "Product not found." });
+    return;
+  }
+
+  const reaction = await prisma.listingReaction.upsert({
+    where: { postId_userId: { postId: post.id, userId: user.id } },
+    create: { postId: post.id, userId: user.id, type: type as ListingReactionType },
+    update: { type: type as ListingReactionType },
+  });
+  const reactionCount = await prisma.listingReaction.count({ where: { postId: post.id } });
+  response.json({ reaction: reaction.type, reactionCount });
+});
+
+router.delete("/listings/:listingId/reaction", requireSupabaseUser, requireConfirmedEmail, async (request, response) => {
+  const user = currentUser(request);
+  const listingId = request.params.listingId;
+  if (typeof listingId !== "string") {
+    response.status(400).json({ error: "A valid product ID is required." });
+    return;
+  }
+  const post = await prisma.post.findFirst({
+    where: { id: listingId, ...publicDiscussionPostWhere() },
+    select: { id: true },
+  });
+  if (!post) {
+    response.status(404).json({ error: "Product not found." });
+    return;
+  }
+
+  await prisma.listingReaction.deleteMany({ where: { postId: post.id, userId: user.id } });
+  const reactionCount = await prisma.listingReaction.count({ where: { postId: post.id } });
+  response.json({ reaction: null, reactionCount });
 });
 
 router.get("/listings/:listingId/comments", optionalSupabaseUser, async (request, response) => {

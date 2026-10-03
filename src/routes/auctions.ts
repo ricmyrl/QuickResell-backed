@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import type { AuctionRoom, Bid, Prisma, User } from "../generated/prisma/client.js";
-import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
+import { optionalSupabaseUser, requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
 import { notifyAuctionResolution, notifyBidActivity } from "../lib/notifications.js";
 import { sendAuctionWonEmail } from "../services/mail.js";
@@ -235,7 +235,8 @@ router.get("/auctions/mine", async (request, response) => {
   response.json({ auctionRooms, seller: sellerStats });
 });
 
-router.get("/auctions", async (request, response) => {
+router.get("/auctions", optionalSupabaseUser, async (request, response) => {
+  const viewerId = (request as AuthenticatedRequest).marketplaceUser?.id;
   const requestedLimit = Number(request.query.limit ?? 20);
   if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 50) {
     response.status(400).json({ error: "limit must be an integer between 1 and 50." });
@@ -277,6 +278,10 @@ router.get("/auctions", async (request, response) => {
           locationCampus: true,
           category: { select: { name: true } },
           images: { take: 1, orderBy: { sortOrder: "asc" } },
+          _count: { select: { listingReactions: true } },
+          listingReactions: viewerId
+            ? { where: { userId: viewerId }, select: { type: true } }
+            : { take: 0, select: { type: true } },
         },
       },
       seller: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true, completedAuctions: true } },
@@ -290,9 +295,15 @@ router.get("/auctions", async (request, response) => {
   });
 });
 
-router.get("/auctions/:auctionRoomId", async (request, response) => {
+router.get("/auctions/:auctionRoomId", optionalSupabaseUser, async (request, response) => {
+  const viewerId = (request as AuthenticatedRequest).marketplaceUser?.id;
+  const auctionRoomId = request.params.auctionRoomId;
+  if (typeof auctionRoomId !== "string") {
+    response.status(400).json({ error: "A valid auction room ID is required." });
+    return;
+  }
   const auctionRoom = await prisma.auctionRoom.findUnique({
-    where: { id: request.params.auctionRoomId },
+    where: { id: auctionRoomId },
     include: {
       post: {
         select: {
@@ -303,6 +314,10 @@ router.get("/auctions/:auctionRoomId", async (request, response) => {
           locationCampus: true,
           category: { select: { name: true } },
           images: { take: 1, orderBy: { sortOrder: "asc" } },
+          _count: { select: { listingReactions: true } },
+          listingReactions: viewerId
+            ? { where: { userId: viewerId }, select: { type: true } }
+            : { take: 0, select: { type: true } },
         },
       },
       seller: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true, completedAuctions: true } },
