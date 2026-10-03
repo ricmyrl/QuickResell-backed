@@ -5,6 +5,7 @@ import { optionalSupabaseUser, requireConfirmedEmail, requireSupabaseUser, type 
 import { prisma } from "../lib/prisma.js";
 import { createNotificationsForUsers } from "../lib/notifications.js";
 import { createMarketplaceScorer, type MarketplaceFeedType } from "../../servies/marketRecomendationService.js";
+import { emptyListingReactionCounts, getListingReactionCounts } from "../services/listingReactions.js";
 
 const router = Router();
 const feedTypes: MarketplaceFeedType[] = ["FOR_YOU", "DEALS", "NEARBY", "EXPLORE"];
@@ -68,7 +69,13 @@ router.get("/store", optionalSupabaseUser, async (request, response) => {
         : { take: 0, select: { type: true } },
     },
   });
-  response.json({ items });
+  const reactionCounts = await getListingReactionCounts(items.map(({ id }) => id));
+  response.json({
+    items: items.map((item) => ({
+      ...item,
+      reactionCounts: reactionCounts.get(item.id) ?? emptyListingReactionCounts(),
+    })),
+  });
 });
 
 router.post("/listings/:listingId/reaction", requireSupabaseUser, requireConfirmedEmail, async (request, response) => {
@@ -94,8 +101,9 @@ router.post("/listings/:listingId/reaction", requireSupabaseUser, requireConfirm
     create: { postId: post.id, userId: user.id, type: type as ListingReactionType },
     update: { type: type as ListingReactionType },
   });
-  const reactionCount = await prisma.listingReaction.count({ where: { postId: post.id } });
-  response.json({ reaction: reaction.type, reactionCount });
+  const reactionCounts = (await getListingReactionCounts([post.id])).get(post.id) ?? emptyListingReactionCounts();
+  const reactionCount = Object.values(reactionCounts).reduce((total, count) => total + count, 0);
+  response.json({ reaction: reaction.type, reactionCount, reactionCounts });
 });
 
 router.delete("/listings/:listingId/reaction", requireSupabaseUser, requireConfirmedEmail, async (request, response) => {
@@ -115,8 +123,9 @@ router.delete("/listings/:listingId/reaction", requireSupabaseUser, requireConfi
   }
 
   await prisma.listingReaction.deleteMany({ where: { postId: post.id, userId: user.id } });
-  const reactionCount = await prisma.listingReaction.count({ where: { postId: post.id } });
-  response.json({ reaction: null, reactionCount });
+  const reactionCounts = (await getListingReactionCounts([post.id])).get(post.id) ?? emptyListingReactionCounts();
+  const reactionCount = Object.values(reactionCounts).reduce((total, count) => total + count, 0);
+  response.json({ reaction: null, reactionCount, reactionCounts });
 });
 
 router.get("/listings/:listingId/comments", optionalSupabaseUser, async (request, response) => {

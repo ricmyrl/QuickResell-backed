@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma.js";
 import { notifyAuctionResolution, notifyBidActivity } from "../lib/notifications.js";
 import { sendAuctionWonEmail } from "../services/mail.js";
 import { processAuctionAutoBid } from "../services/autoBidding.js";
+import { emptyListingReactionCounts, getListingReactionCounts } from "../services/listingReactions.js";
 
 const router = Router();
 const antiSnipeWindowMs = 10_000;
@@ -289,8 +290,17 @@ router.get("/auctions", optionalSupabaseUser, async (request, response) => {
   });
   const hasMore = rows.length > requestedLimit;
   const auctionRooms = hasMore ? rows.slice(0, requestedLimit) : rows;
+  const reactionCounts = await getListingReactionCounts(
+    auctionRooms.flatMap((room) => room.post ? [room.post.id] : []),
+  );
   response.json({
-    auctionRooms,
+    auctionRooms: auctionRooms.map((room) => ({
+      ...room,
+      post: room.post ? {
+        ...room.post,
+        reactionCounts: reactionCounts.get(room.post.id) ?? emptyListingReactionCounts(),
+      } : room.post,
+    })),
     nextCursor: hasMore ? auctionRooms[auctionRooms.length - 1]?.id ?? null : null,
   });
 });
@@ -334,7 +344,15 @@ router.get("/auctions/:auctionRoomId", optionalSupabaseUser, async (request, res
     response.status(404).json({ error: "Auction room not found." });
     return;
   }
-  response.json({ auctionRoom });
+  const reactionCounts = auctionRoom.post
+    ? (await getListingReactionCounts([auctionRoom.post.id])).get(auctionRoom.post.id) ?? emptyListingReactionCounts()
+    : emptyListingReactionCounts();
+  response.json({
+    auctionRoom: {
+      ...auctionRoom,
+      post: auctionRoom.post ? { ...auctionRoom.post, reactionCounts } : auctionRoom.post,
+    },
+  });
 });
 
 router.use("/auctions/:auctionRoomId/bids", requireSupabaseUser, requireConfirmedEmail);
