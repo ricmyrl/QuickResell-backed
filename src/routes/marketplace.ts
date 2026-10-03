@@ -10,6 +10,17 @@ const feedTypes: MarketplaceFeedType[] = ["FOR_YOU", "DEALS", "NEARBY", "EXPLORE
 const maxFeedCandidates = 500;
 const maxListingImages = 8;
 
+function publicDiscussionPostWhere() {
+  return {
+    status: "ACTIVE" as const,
+    quantityAvailable: { gt: 0 },
+    OR: [
+      { auctionRoom: { is: null } },
+      { auctionRoom: { is: { status: "ACTIVE" as const, isPublic: true, endsAt: { gt: new Date() } } } },
+    ],
+  };
+}
+
 function currentUser(request: Request): User {
   const user = (request as AuthenticatedRequest).marketplaceUser;
   if (!user) throw new Error("Authenticated user was not attached to the request.");
@@ -65,9 +76,7 @@ router.get("/listings/:listingId/comments", optionalSupabaseUser, async (request
   const listing = await prisma.post.findFirst({
     where: {
       id: listingId,
-      status: "ACTIVE",
-      quantityAvailable: { gt: 0 },
-      auctionRoom: { is: null },
+      ...publicDiscussionPostWhere(),
     },
     include: {
       _count: { select: { comments: true } },
@@ -184,9 +193,7 @@ router.post("/listings/:listingId/comments", async (request, response) => {
   const listing = await prisma.post.findFirst({
     where: {
       id: listingId,
-      status: "ACTIVE",
-      quantityAvailable: { gt: 0 },
-      auctionRoom: { is: null },
+      ...publicDiscussionPostWhere(),
     },
     select: { id: true },
   });
@@ -225,11 +232,7 @@ router.post("/listings/:listingId/comments/:commentId/reaction", async (request,
     where: {
       id: commentId,
       postId: listingId,
-      post: {
-        status: "ACTIVE",
-        quantityAvailable: { gt: 0 },
-        auctionRoom: { is: null },
-      },
+      post: publicDiscussionPostWhere(),
     },
     select: { id: true },
   });
