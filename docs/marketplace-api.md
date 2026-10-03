@@ -248,7 +248,7 @@ Load the initial state from `GET /api/auctions/:auctionRoomId`, then treat Realt
 
 ## Fixed-Price Shop and Cart
 
-Run the additive migration `20260930190000_add_shopping_cart_orders` and regenerate Prisma before enabling these routes. `GET /api/store` returns in-stock, fixed-price listings that are not attached to an auction. Auction rooms remain in the live-auction feed and cannot be added to the buy-now cart. `POST /api/listings` accepts optional `quantityAvailable` (integer 1–1000), defaulting to one.
+Run the additive migrations `20260930190000_add_shopping_cart_orders` and `20261003130000_add_order_fulfillment_tracking`, then regenerate Prisma before enabling these routes. `GET /api/store` returns in-stock, fixed-price listings that are not attached to an auction. Auction rooms remain in the live-auction feed and cannot be added to the buy-now cart. `POST /api/listings` accepts optional `quantityAvailable` (integer 1–1000), defaulting to one.
 
 All cart endpoints require the signed-in user's Supabase bearer token. Cart rows are stored per user in PostgreSQL; client-submitted prices are never trusted.
 
@@ -259,6 +259,10 @@ All cart endpoints require the signed-in user's Supabase bearer token. Cart rows
 | `POST` | `/api/cart/items` | Send `{ "postId": "...", "quantity": 1 }` to add units. Re-adding increments the existing line. |
 | `PATCH` | `/api/cart/items/:postId` | Set `{ "quantity": 2 }`, validated against current stock. |
 | `DELETE` | `/api/cart/items/:postId` | Remove this listing from the signed-in user's cart. |
-| `POST` | `/api/cart/checkout` | Atomically revalidates stock and auction status, snapshots current prices in cents, creates a pending campus-handoff order, decrements inventory, and clears the cart. |
+| `POST` | `/api/cart/checkout` | Verifies the Paystack reference and total, then atomically revalidates stock, snapshots prices, creates a paid order, decrements inventory, and clears the cart. |
+| `GET` | `/api/orders/mine` | List the signed-in buyer's paid orders and each seller's fulfillment status. |
+| `POST` | `/api/orders/items/:itemId/complete` | Buyer confirms receipt after an item is ready for pickup or shipped. |
+| `GET` | `/api/seller/orders` | List paid line items for the signed-in seller. |
+| `POST` | `/api/seller/orders/:itemId/fulfillment` | Seller sends `{ "method": "PICKUP" }` or `{ "method": "SHIPPING" }`; this sets the item to ready for pickup or shipped and notifies the buyer. |
 
-Checkout records an order and reserves inventory; it does not collect card payments or calculate shipping. Buyers and sellers arrange payment and a campus meetup directly. Cart prices are informational until checkout, where the current asking price is used. Cart writes and checkout lock the user row and listing rows to serialize concurrent changes and prevent overselling. Guest preview carts use browser local storage and do not create backend orders.
+Checkout is only completed after the backend verifies the Paystack payment. Sellers then choose pickup or shipping for each paid item; buyers can track those updates and confirm receipt. Pickup meetup arrangements are coordinated directly between buyer and seller. Shipping is tracked as a seller-reported shipped state; carrier tracking details are not collected. Cart writes and checkout lock the user row and listing rows to serialize concurrent changes and prevent overselling. Guest preview carts use browser local storage and do not create backend orders.

@@ -31,6 +31,18 @@ enum PurchaseOrderStatus {
   CANCELLED
 }
 
+enum OrderItemFulfillmentStatus {
+  PENDING_HANDOFF
+  READY_FOR_PICKUP
+  SHIPPED
+  COMPLETED
+}
+
+enum FulfillmentMethod {
+  PICKUP
+  SHIPPING
+}
+
 enum MessageType {
   GENERAL
   REVIEW
@@ -367,6 +379,8 @@ model PurchaseOrderItem {
   title          String
   quantity       Int
   unitPriceCents Int
+  fulfillmentStatus OrderItemFulfillmentStatus @default(PENDING_HANDOFF)
+  fulfillmentMethod FulfillmentMethod?
   createdAt      DateTime      @default(now())
   order          PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
   post           Post          @relation(fields: [postId], references: [id], onDelete: Restrict)

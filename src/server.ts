@@ -9,6 +9,7 @@ import conversationsRouter from "./routes/conversations.js";
 import currencyRouter from "./routes/currency.js";
 import marketplaceRouter from "./routes/marketplace.js";
 import notificationsRouter from "./routes/notifications.js";
+import ordersRouter from "./routes/orders.js";
 import paymentsRouter from "./routes/payments.js";
 import scoutRouter from "./routes/scout.js";
 
@@ -75,6 +76,7 @@ app.use("/api", currencyRouter);
 app.use("/api", auctionWatchlistRouter);
 app.use("/api", marketplaceRouter);
 app.use("/api", notificationsRouter);
+app.use("/api", ordersRouter);
 app.use("/api", conversationsRouter);
 app.use("/api", scoutRouter);
 app.use("/api", cartRouter);
