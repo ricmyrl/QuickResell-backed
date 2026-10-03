@@ -3,6 +3,7 @@ import type { User } from "../generated/prisma/client.js";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
 import { sendScoutSupportEmail } from "../services/mail.js";
+import { generateScoutReply, type ScoutContext, type ScoutMessage } from "../services/scoutLanguageModel.js";
 
 const router = Router();
 const allowedIntents = new Set([
@@ -20,12 +21,113 @@ const allowedIntents = new Set([
 const allowedSupportCategories = new Set(["BIDDING", "SHOP", "CHECKOUT", "ACCOUNT", "TECHNICAL", "OTHER"]);
 const supportWindowMs = 24 * 60 * 60 * 1000;
 const maxSupportRequestsPerWindow = 5;
+const chatWindowMs = 60_000;
+const maxChatRequestsPerWindow = 12;
+const chatRequestCounts = new Map<string, { count: number; resetAt: number }>();
+
+function boundedString(value: unknown, maximumLength: number): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= maximumLength;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isScoutMessage(value: unknown): value is ScoutMessage {
+  return isRecord(value)
+    && (value.role === "user" || value.role === "assistant")
+    && boundedString(value.content, 1000);
+}
+
+function isScoutAuction(value: unknown): value is ScoutContext["auctions"][number] {
+  return isRecord(value)
+    && boundedString(value.title, 100)
+    && boundedString(value.category, 60)
+    && boundedString(value.location, 80)
+    && typeof value.currentBid === "number"
+    && Number.isFinite(value.currentBid)
+    && value.currentBid >= 0
+    && typeof value.bids === "number"
+    && Number.isInteger(value.bids)
+    && value.bids >= 0;
+}
+
+function isScoutListing(value: unknown): value is ScoutContext["listings"][number] {
+  return isRecord(value)
+    && boundedString(value.title, 100)
+    && boundedString(value.category, 60)
+    && boundedString(value.location, 80)
+    && typeof value.price === "number"
+    && Number.isFinite(value.price)
+    && value.price >= 0
+    && typeof value.quantityAvailable === "number"
+    && Number.isInteger(value.quantityAvailable)
+    && value.quantityAvailable >= 0;
+}
+
+function validChatMessages(value: unknown): value is ScoutMessage[] {
+  return Array.isArray(value)
+    && value.length >= 1
+    && value.length <= 8
+    && value.every(isScoutMessage)
+    && value[value.length - 1]?.role === "user";
+}
+
+function validScoutContext(value: unknown): value is ScoutContext {
+  return isRecord(value)
+    && Array.isArray(value.auctions)
+    && value.auctions.length <= 20
+    && value.auctions.every(isScoutAuction)
+    && Array.isArray(value.listings)
+    && value.listings.length <= 20
+    && value.listings.every(isScoutListing);
+}
+
+function allowChatRequest(ipAddress: string): boolean {
+  const now = Date.now();
+  for (const [ip, entry] of chatRequestCounts) {
+    if (entry.resetAt <= now) chatRequestCounts.delete(ip);
+  }
+  const current = chatRequestCounts.get(ipAddress);
+  if (!current || current.resetAt <= now) {
+    chatRequestCounts.set(ipAddress, { count: 1, resetAt: now + chatWindowMs });
+    return true;
+  }
+  if (current.count >= maxChatRequestsPerWindow) return false;
+  current.count += 1;
+  return true;
+}
 
 function currentUser(request: Request): User {
   const user = (request as AuthenticatedRequest).marketplaceUser;
   if (!user) throw new Error("Authenticated user was not attached to the request.");
   return user;
 }
+
+router.post("/scout/chat", async (request, response) => {
+  if (!allowChatRequest(request.ip || "unknown")) {
+    response.status(429).json({ error: "Scout is receiving too many requests. Please wait a minute and try again." });
+    return;
+  }
+
+  const { messages, context } = request.body ?? {};
+  if (!validChatMessages(messages)) {
+    response.status(400).json({ error: "Send between 1 and 8 recent Scout messages, each no longer than 1000 characters." });
+    return;
+  }
+  if (!validScoutContext(context)) {
+    response.status(400).json({ error: "The marketplace context is missing or invalid." });
+    return;
+  }
+
+  try {
+    const reply = await generateScoutReply(messages, context);
+    response.json({ reply, model: process.env.SCOUT_MODEL?.trim() || "qwen2.5:0.5b" });
+  } catch (error) {
+    console.warn("Scout language model is unavailable.", error instanceof Error ? error.message : "Unknown model error.");
+    response.status(503).json({ error: "The Scout language model is unavailable. Local Scout help is still available." });
+  }
+});
 
 router.use("/scout/feedback", requireSupabaseUser, requireConfirmedEmail);
 router.post("/scout/feedback", async (request, response) => {

@@ -1,5 +1,6 @@
 import "dotenv/config";
 import cors from "cors";
+import { randomUUID } from "node:crypto";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { prisma } from "./lib/prisma.js";
 import auctionsRouter, { finalizeExpiredAuctions } from "./routes/auctions.js";
@@ -59,6 +60,12 @@ function isAllowedOrigin(origin: string | undefined): boolean {
   return false;
 }
 
+app.use((_request, response, next) => {
+  const requestId = randomUUID();
+  response.locals.requestId = requestId;
+  response.setHeader("X-Request-Id", requestId);
+  next();
+});
 app.use(cors({
   origin(origin, callback) {
     if (isAllowedOrigin(origin)) {
@@ -82,6 +89,14 @@ app.use("/api", scoutRouter);
 app.use("/api", cartRouter);
 app.use("/api", paymentsRouter);
 app.use("/api", auctionsRouter);
+app.use((request, response) => {
+  const requestId = typeof response.locals.requestId === "string" ? response.locals.requestId : randomUUID();
+  response.status(404).json({
+    error: "The requested API endpoint does not exist.",
+    code: "ENDPOINT_NOT_FOUND",
+    requestId,
+  });
+});
 
 void finalizeExpiredAuctions().catch((error: unknown) => {
   console.error("Failed to finalize expired auctions during startup.", error);
@@ -92,9 +107,60 @@ const auctionFinalizationTimer = setInterval(() => {
   });
 }, 5_000);
 
-app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
-  console.error(error);
-  response.status(500).json({ error: "Internal server error." });
+app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => {
+  const requestId = typeof response.locals.requestId === "string" ? response.locals.requestId : randomUUID();
+  const details = typeof error === "object" && error !== null
+    ? error as { code?: unknown; type?: unknown; status?: unknown; message?: unknown }
+    : {};
+  const errorCode = typeof details.code === "string" ? details.code : "";
+  const errorType = typeof details.type === "string" ? details.type : "";
+  let status = 500;
+  let code = "INTERNAL_SERVER_ERROR";
+  let message = "The server could not complete your request.";
+
+  if (errorType === "entity.parse.failed") {
+    status = 400;
+    code = "INVALID_JSON";
+    message = "The request body contains invalid JSON.";
+  } else if (errorType === "entity.too.large") {
+    status = 413;
+    code = "REQUEST_TOO_LARGE";
+    message = "The request body is too large.";
+  } else if (["P2021", "P2022", "42P01", "42703"].includes(errorCode)) {
+    status = 503;
+    code = "DATABASE_SCHEMA_UNAVAILABLE";
+    message = "The database is missing a required update. Please retry shortly or contact support.";
+  } else if (["P1001", "P1002", "P1008", "P1017", "08000", "08003", "08006"].includes(errorCode)) {
+    status = 503;
+    code = "DATABASE_UNAVAILABLE";
+    message = "The database is temporarily unavailable. Please retry shortly.";
+  } else if (errorCode === "P2002") {
+    status = 409;
+    code = "RESOURCE_CONFLICT";
+    message = "This request conflicts with an existing record.";
+  } else if (errorCode === "P2003") {
+    status = 409;
+    code = "RELATED_RESOURCE_CONFLICT";
+    message = "This request references a resource that can no longer be changed.";
+  } else if (errorCode === "P2025") {
+    status = 404;
+    code = "RESOURCE_NOT_FOUND";
+    message = "The requested record could not be found.";
+  } else if (error instanceof Error && error.message === "Origin is not allowed by CORS.") {
+    status = 403;
+    code = "ORIGIN_NOT_ALLOWED";
+    message = "This website is not allowed to access the API.";
+  }
+
+  console.error("API request failed.", {
+    requestId,
+    method: request.method,
+    path: request.path,
+    status,
+    code,
+    error,
+  });
+  response.status(status).json({ error: message, code, requestId });
 });
 
 const port = Number(process.env.PORT ?? 3000);

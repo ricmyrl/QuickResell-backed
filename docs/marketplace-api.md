@@ -70,6 +70,22 @@ const { listing } = await response.json();
 
 To start the backend locally, copy `.env.example` to `.env`, fill in the Supabase values, and run `npm run dev`.
 
+## Scout AI Assistance
+
+Scout keeps its deterministic, on-device guidance for bidding, checkout, support, and marketplace actions. For general questions it can optionally call the backend `POST /api/scout/chat` endpoint, which forwards bounded recent chat and a curated public marketplace snapshot to a private Ollama instance. The model returns text only: navigation, bids, purchases, and other consequential actions remain controlled by the app. If Ollama is offline or times out, Scout falls back to its local response. The endpoint is rate-limited and does not require authentication; do not include passwords, payment information, or other sensitive data in Scout messages.
+
+The default model is `qwen2.5:0.5b` (Ollama's approximately 397 MB model artifact, below the 500 MB requirement). Install Ollama on the backend host, then pull the model and configure the backend:
+
+```sh
+ollama pull qwen2.5:0.5b
+```
+
+Set `OLLAMA_BASE_URL` to the Ollama API base URL (default `http://127.0.0.1:11434`) and optionally set `SCOUT_MODEL` in the backend environment. Keep Ollama private; expose only the marketplace API to clients. The backend starts and serves all other routes normally if Ollama is not installed or running.
+
+| Method | Endpoint | Behavior |
+| --- | --- | --- |
+| `POST` | `/api/scout/chat` | Accepts up to 8 recent `{ role, content }` messages and a bounded public auction/listing context; returns `{ reply, model }`. Responds with `503` when the configured model is unavailable and `429` when the per-IP request limit is exceeded. |
+
 ## Buyer-Seller Conversations
 
 Run `npm run prisma:generate` and `npm run db:migrate` to create the schema. This repository had no earlier migrations, so its initial migration creates the existing marketplace tables as well as chat tables. If those tables already exist in your database, back up the database and baseline/adopt the migration history rather than applying the initial migration unchanged. All chat API routes require the same Supabase bearer token as the marketplace routes; the API derives the participant from the verified token and never trusts a user ID in the request body.
@@ -266,3 +282,5 @@ All cart endpoints require the signed-in user's Supabase bearer token. Cart rows
 | `POST` | `/api/seller/orders/:itemId/fulfillment` | Seller sends `{ "method": "PICKUP" }` or `{ "method": "SHIPPING" }`; this sets the item to ready for pickup or shipped and notifies the buyer. |
 
 Checkout is only completed after the backend verifies the Paystack payment. Sellers then choose pickup or shipping for each paid item; buyers can track those updates and confirm receipt. Pickup meetup arrangements are coordinated directly between buyer and seller. Shipping is tracked as a seller-reported shipped state; carrier tracking details are not collected. Cart writes and checkout lock the user row and listing rows to serialize concurrent changes and prevent overselling. Guest preview carts use browser local storage and do not create backend orders.
+
+API errors return a safe message, stable error code, and request ID, for example `{ "error": "The database is temporarily unavailable. Please retry shortly.", "code": "DATABASE_UNAVAILABLE", "requestId": "..." }`. The matching request ID is included in server logs and in the `X-Request-Id` response header; share it with support when reporting a failure. Missing database tables or columns return `503 DATABASE_SCHEMA_UNAVAILABLE` rather than an opaque internal-server error.
