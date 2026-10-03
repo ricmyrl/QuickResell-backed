@@ -14,6 +14,7 @@ import notificationsRouter from "./routes/notifications.js";
 import ordersRouter from "./routes/orders.js";
 import paymentsRouter from "./routes/payments.js";
 import scoutRouter from "./routes/scout.js";
+import walletRouter from "./routes/wallet.js";
 
 const requiredEnvironment = ["SUPABASE_URL"];
 if (!process.env.DATABASE_URL && !process.env.DIRECT_URL) {
@@ -90,6 +91,7 @@ app.use("/api", conversationsRouter);
 app.use("/api", scoutRouter);
 app.use("/api", cartRouter);
 app.use("/api", paymentsRouter);
+app.use("/api", walletRouter);
 app.use("/api", auctionsRouter);
 app.use((request, response) => {
   const requestId = typeof response.locals.requestId === "string" ? response.locals.requestId : randomUUID();
