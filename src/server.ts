@@ -5,6 +5,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { prisma } from "./lib/prisma.js";
 import auctionsRouter, { finalizeExpiredAuctions } from "./routes/auctions.js";
 import auctionWatchlistRouter from "./routes/auctionWatchlist.js";
+import accountRouter from "./routes/account.js";
 import cartRouter from "./routes/cart.js";
 import conversationsRouter from "./routes/conversations.js";
 import currencyRouter from "./routes/currency.js";
@@ -80,6 +81,7 @@ app.use(express.json({ limit: "64kb" }));
 
 app.get("/health", (_request, response) => response.json({ status: "ok" }));
 app.use("/api", currencyRouter);
+app.use("/api", accountRouter);
 app.use("/api", auctionWatchlistRouter);
 app.use("/api", marketplaceRouter);
 app.use("/api", notificationsRouter);

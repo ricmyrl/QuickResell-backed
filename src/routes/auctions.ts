@@ -89,13 +89,21 @@ async function moveExpiredAuctionToApproval(
 
   const reserveMet = room.highestBidderId !== null &&
     (room.reservePrice === null || room.currentHighestBid >= room.reservePrice);
-  return transaction.auctionRoom.update({
+  const auctionRoom = await transaction.auctionRoom.update({
     where: { id: room.id },
     data: {
       status: reserveMet ? "PENDING_APPROVAL" : "CLOSED",
       ...(endEarly ? { endsAt: now } : {}),
     },
   });
+  if (reserveMet && room.highestBidderId) {
+    await transaction.cartItem.deleteMany({
+      where: { auctionRoomId: room.id, userId: { not: room.highestBidderId } },
+    });
+  } else {
+    await transaction.cartItem.deleteMany({ where: { auctionRoomId: room.id } });
+  }
+  return auctionRoom;
 }
 
 export async function finalizeExpiredAuctions(): Promise<void> {
@@ -104,27 +112,41 @@ export async function finalizeExpiredAuctions(): Promise<void> {
 
   try {
     const now = new Date();
-    await prisma.$executeRaw`
-      WITH expired AS (
-        SELECT "id"
-        FROM "AuctionRoom"
-        WHERE "status" = 'ACTIVE'::"AuctionRoomStatus"
-          AND "endsAt" <= ${now}
-        ORDER BY "endsAt" ASC
-        LIMIT 100
-        FOR UPDATE SKIP LOCKED
-      )
-      UPDATE "AuctionRoom" AS room
-      SET "status" = CASE
-            WHEN room."highestBidderId" IS NOT NULL
-              AND (room."reservePrice" IS NULL OR room."currentHighestBid" >= room."reservePrice")
-            THEN 'PENDING_APPROVAL'::"AuctionRoomStatus"
-            ELSE 'CLOSED'::"AuctionRoomStatus"
-          END,
-          "updatedAt" = ${now}
-      FROM expired
-      WHERE room."id" = expired."id"
-    `;
+    await prisma.$transaction(async (transaction) => {
+      await transaction.$executeRaw`
+        WITH expired AS (
+          SELECT "id"
+          FROM "AuctionRoom"
+          WHERE "status" = 'ACTIVE'::"AuctionRoomStatus"
+            AND "endsAt" <= ${now}
+          ORDER BY "endsAt" ASC
+          LIMIT 100
+          FOR UPDATE SKIP LOCKED
+        )
+        UPDATE "AuctionRoom" AS room
+        SET "status" = CASE
+              WHEN room."highestBidderId" IS NOT NULL
+                AND (room."reservePrice" IS NULL OR room."currentHighestBid" >= room."reservePrice")
+              THEN 'PENDING_APPROVAL'::"AuctionRoomStatus"
+              ELSE 'CLOSED'::"AuctionRoomStatus"
+            END,
+            "updatedAt" = ${now}
+        FROM expired
+        WHERE room."id" = expired."id"
+      `;
+      await transaction.$executeRaw`
+        DELETE FROM "CartItem" AS cart
+        USING "AuctionRoom" AS room
+        WHERE cart."auctionRoomId" = room."id"
+          AND (
+            room."status" = 'CLOSED'::"AuctionRoomStatus"
+            OR (
+              room."status" = 'PENDING_APPROVAL'::"AuctionRoomStatus"
+              AND room."highestBidderId" IS DISTINCT FROM cart."userId"
+            )
+          )
+      `;
+    });
   } finally {
     finalizationInProgress = false;
   }
@@ -406,6 +428,11 @@ router.post("/auctions/:auctionRoomId/bids", async (request, response) => {
         endsAt,
       },
     });
+    await transaction.cartItem.upsert({
+      where: { userId_postId: { userId: bidder.id, postId: room.postId } },
+      create: { userId: bidder.id, postId: room.postId, auctionRoomId: room.id },
+      update: { auctionRoomId: room.id, quantity: 1 },
+    });
 
     const itemTitle = await transaction.post.findUnique({
       where: { id: room.postId },
@@ -535,6 +562,9 @@ router.post("/auctions/:roomId/verdict", async (request, response) => {
           finalPrice: currentRoom.currentHighestBid,
         });
       }
+      await transaction.cartItem.deleteMany({
+        where: { auctionRoomId: currentRoom.id, userId: { not: currentRoom.highestBidderId } },
+      });
 
       return { auctionRoom, trustScore: updatedSeller.trustScore };
     }
@@ -543,6 +573,7 @@ router.post("/auctions/:roomId/verdict", async (request, response) => {
       where: { id: currentRoom.id },
       data: { status: "REJECTED" },
     });
+    await transaction.cartItem.deleteMany({ where: { auctionRoomId: currentRoom.id } });
     await transaction.post.update({
       where: { id: currentRoom.postId },
       data: { status: "RESERVED" },

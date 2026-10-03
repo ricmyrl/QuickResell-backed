@@ -19,6 +19,18 @@ with check (
 
 Set the variables from `.env.example`. Use the Supabase pooler URL for `DATABASE_URL` at runtime and the direct database URL for `DIRECT_URL` migrations. Then run `npm run prisma:generate`, `npm run db:migrate`, and `npm run db:seed`.
 
+## Account and Profile
+
+The signed-in account menu provides profile editing, campus and budget preferences, email/password security settings, sign-out, and permanent account deletion. Profile names are updated in Supabase Auth metadata; preferences are stored on the local `User` record. Email changes follow Supabase's email-confirmation flow. Account deletion requires the account email as confirmation, removes owned listing photos from Supabase Storage, deletes linked marketplace data and order history, then deletes the Supabase Auth user and sessions. Payment processors may retain transaction records under their own legal and retention requirements.
+
+The backend must have `SUPABASE_SERVICE_ROLE_KEY` configured as a server-only secret for account deletion. Never place this key in the frontend or expose it to clients. The account endpoints require the signed-in user's bearer token:
+
+| Method | Endpoint | Behavior |
+| --- | --- | --- |
+| `GET` | `/api/account` | Return the signed-in user's profile and shopping preferences. |
+| `PATCH` | `/api/account` | Update `{ "preferredDormOrCampus": "...", "budgetPreference": 250 }`; budget may be `null`. |
+| `DELETE` | `/api/account` | Permanently remove linked marketplace records after `{ "confirmation": "account@email" }` matches the authenticated user's email. |
+
 ## Vite/React Listing Creation
 
 Configure the frontend Supabase client with the project URL and publishable/anon key. Start Google OAuth with:
@@ -264,7 +276,7 @@ Load the initial state from `GET /api/auctions/:auctionRoomId`, then treat Realt
 
 ## Fixed-Price Shop and Cart
 
-Run the additive migrations `20260930190000_add_shopping_cart_orders` and `20261003130000_add_order_fulfillment_tracking`, then regenerate Prisma before enabling these routes. `GET /api/store` returns in-stock, fixed-price listings that are not attached to an auction. Auction rooms remain in the live-auction feed and cannot be added to the buy-now cart. `POST /api/listings` accepts optional `quantityAvailable` (integer 1–1000), defaulting to one.
+Run the additive migrations `20260930190000_add_shopping_cart_orders`, `20261003130000_add_order_fulfillment_tracking`, and `20261003150000_add_auction_cart_holds`, then regenerate Prisma before enabling these routes. `GET /api/store` returns in-stock, fixed-price listings that are not attached to an auction. Bidding automatically adds a locked auction hold to the bidder's cart. Outbid holds stay locked for rebidding and are removed when the auction resolves without that bidder; a hold unlocks only after the seller accepts the buyer's winning bid. Auction winners pay the accepted final bid through Paystack checkout. `POST /api/listings` accepts optional `quantityAvailable` (integer 1–1000), defaulting to one.
 
 All cart endpoints require the signed-in user's Supabase bearer token. Cart rows are stored per user in PostgreSQL; client-submitted prices are never trusted.
 
@@ -275,12 +287,12 @@ All cart endpoints require the signed-in user's Supabase bearer token. Cart rows
 | `POST` | `/api/cart/items` | Send `{ "postId": "...", "quantity": 1 }` to add units. Re-adding increments the existing line. |
 | `PATCH` | `/api/cart/items/:postId` | Set `{ "quantity": 2 }`, validated against current stock. |
 | `DELETE` | `/api/cart/items/:postId` | Remove this listing from the signed-in user's cart. |
-| `POST` | `/api/cart/checkout` | Verifies the Paystack reference and total, then atomically revalidates stock, snapshots prices, creates a paid order, decrements inventory, and clears the cart. |
+| `POST` | `/api/cart/checkout` | Verifies the Paystack reference and payable subtotal, then atomically revalidates stock and accepted auction wins, creates a paid order, decrements fixed-price inventory, removes purchased cart entries, and records in-app notifications for the buyer and each seller. Locked auction holds are not charged or removed. |
 | `GET` | `/api/orders/mine` | List the signed-in buyer's paid orders and each seller's fulfillment status. |
 | `POST` | `/api/orders/items/:itemId/complete` | Buyer confirms receipt after an item is ready for pickup or shipped. |
 | `GET` | `/api/seller/orders` | List paid line items for the signed-in seller. |
 | `POST` | `/api/seller/orders/:itemId/fulfillment` | Seller sends `{ "method": "PICKUP" }` or `{ "method": "SHIPPING" }`; this sets the item to ready for pickup or shipped and notifies the buyer. |
 
-Checkout is only completed after the backend verifies the Paystack payment. Sellers then choose pickup or shipping for each paid item; buyers can track those updates and confirm receipt. Pickup meetup arrangements are coordinated directly between buyer and seller. Shipping is tracked as a seller-reported shipped state; carrier tracking details are not collected. Cart writes and checkout lock the user row and listing rows to serialize concurrent changes and prevent overselling. Guest preview carts use browser local storage and do not create backend orders.
+Checkout is only completed after the backend verifies the Paystack payment. Payment initialization snapshots the exact payable cart-line IDs and subtotal so auction holds that unlock during an in-progress payment cannot be charged accidentally; a changed payable set is rejected for support follow-up. A single checkout supports up to 100 payable cart lines. The buyer and each seller receive a persisted `ORDER_UPDATE` notification as part of the same transaction that creates the order; notifications are delivered through the in-app Alerts feed. Sellers then choose pickup or shipping for each paid item; buyers can track those updates and confirm receipt. Pickup meetup arrangements are coordinated directly between buyer and seller. Shipping is tracked as a seller-reported shipped state; carrier tracking details are not collected. Cart writes and checkout lock the user row and listing rows to serialize concurrent changes and prevent overselling. Guest preview carts use browser local storage and do not create backend orders.
 
 API errors return a safe message, stable error code, and request ID, for example `{ "error": "The database is temporarily unavailable. Please retry shortly.", "code": "DATABASE_UNAVAILABLE", "requestId": "..." }`. The matching request ID is included in server logs and in the `X-Request-Id` response header; share it with support when reporting a failure. Missing database tables or columns return `503 DATABASE_SCHEMA_UNAVAILABLE` rather than an opaque internal-server error.

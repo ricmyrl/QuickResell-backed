@@ -19,7 +19,7 @@ const cartInclude = {
       category: true,
       images: { orderBy: { sortOrder: "asc" as const } },
       user: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true } },
-      auctionRoom: { select: { id: true, status: true } },
+      auctionRoom: { select: { id: true, status: true, highestBidderId: true, currentHighestBid: true, endsAt: true } },
     },
   },
 };
@@ -41,7 +41,18 @@ function isAvailable(post: Post & { auctionRoom?: { status: string } | null }, u
   return post.status === "ACTIVE" && post.sellerId !== userId && !roomUnavailable && post.quantityAvailable >= quantity;
 }
 
-async function verifyPaystackReference(reference: string, expectedSubtotalUsdCents: number, buyerId: string): Promise<void> {
+function isAuctionCartItemAvailable(
+  item: { auctionRoomId: string | null; post: { auctionRoom?: { id: string; status: string; highestBidderId: string | null } | null } },
+  userId: string,
+): boolean {
+  const room = item.post.auctionRoom;
+  return Boolean(item.auctionRoomId && room
+    && item.auctionRoomId === room.id
+    && room.status === "SOLD"
+    && room.highestBidderId === userId);
+}
+
+async function verifyPaystackReference(reference: string, buyerId: string): Promise<{ subtotalUsdCents: number; cartItemIds: string[] }> {
   const secretKey = process.env.PAYSTACK_SECRET_KEY;
   if (!secretKey) throw new CartError("PAYSTACK_SECRET_KEY is not configured.", 500);
 
@@ -55,11 +66,21 @@ async function verifyPaystackReference(reference: string, expectedSubtotalUsdCen
       throw new CartError("Payment verification failed or the transaction is not complete.", 402);
     }
 
+    const subtotalUsdCents = Number(transaction.metadata?.cartSubtotalUsdCents);
+    const cartItemIds: unknown = transaction.metadata?.cartItemIds;
     const initializedAmountKobo = Number(transaction.metadata?.paymentAmountKobo);
-    const initializedSubtotalUsdCents = Number(transaction.metadata?.cartSubtotalUsdCents);
-    if (initializedSubtotalUsdCents !== expectedSubtotalUsdCents || !Number.isSafeInteger(initializedAmountKobo) || Number(transaction.amount) !== initializedAmountKobo) {
+    if (!Number.isSafeInteger(subtotalUsdCents)
+      || subtotalUsdCents <= 0
+      || !Array.isArray(cartItemIds)
+      || cartItemIds.length === 0
+      || cartItemIds.length > 100
+      || !cartItemIds.every((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 100)
+      || new Set(cartItemIds).size !== cartItemIds.length
+      || !Number.isSafeInteger(initializedAmountKobo)
+      || Number(transaction.amount) !== initializedAmountKobo) {
       throw new CartError("The payment amount does not match the order total.", 402);
     }
+    return { subtotalUsdCents, cartItemIds };
   } catch (error) {
     if (error instanceof CartError) throw error;
     const message = axios.isAxiosError(error) ? error.response?.data?.message ?? error.message : "Payment verification failed.";
@@ -76,8 +97,19 @@ router.get("/cart", async (request, response) => {
   });
   response.json({ items: items.map((item) => ({
     ...item,
-    available: isAvailable(item.post, buyer.id, item.quantity),
-    unitPriceCents: Math.round(item.post.price * 100),
+    available: item.auctionRoomId
+      ? isAuctionCartItemAvailable(item, buyer.id)
+      : isAvailable(item.post, buyer.id, item.quantity),
+    unitPriceCents: Math.round((item.auctionRoomId && item.post.auctionRoom
+      ? item.post.auctionRoom.currentHighestBid
+      : item.post.price) * 100),
+    auction: item.auctionRoomId && item.post.auctionRoom ? {
+      roomId: item.post.auctionRoom.id,
+      status: item.post.auctionRoom.status,
+      endsAt: item.post.auctionRoom.endsAt,
+      isHighestBidder: item.post.auctionRoom.highestBidderId === buyer.id,
+      currentHighestBid: item.post.auctionRoom.currentHighestBid,
+    } : null,
   })) });
 });
 
@@ -146,6 +178,9 @@ router.patch("/cart/items/:postId", async (request, response) => {
       transaction.post.findUnique({ where: { id: postId }, include: { auctionRoom: { select: { status: true } } } }),
     ]);
     if (!item || !post) return { error: "Cart item not found.", status: 404 as const };
+    if (item.auctionRoomId) {
+      return { error: "Auction cart items have a fixed quantity and cannot be changed.", status: 409 as const };
+    }
     if (!isAvailable(post, buyer.id, quantity)) {
       return { error: "Requested quantity is no longer available.", status: 409 as const };
     }
@@ -201,31 +236,49 @@ router.post("/cart/checkout", async (request, response) => {
         orderBy: { postId: "asc" },
       });
       if (cartItems.length === 0) return null;
+      const verifiedPayment = await verifyPaystackReference(normalizedPaymentReference, buyer.id);
+      const payableCartItemIds = new Set(verifiedPayment.cartItemIds);
+      if (verifiedPayment.cartItemIds.some((id) => !cartItems.some((item) => item.id === id))) {
+        throw new CartError("Your cart changed after payment started. Contact support with your payment reference.", 409);
+      }
 
-      const purchaseLines: Array<{ post: Post; quantity: number; unitPriceCents: number }> = [];
+      const purchaseLines: Array<{ post: Post; quantity: number; unitPriceCents: number; isAuction: boolean }> = [];
       for (const item of cartItems) {
+        if (!payableCartItemIds.has(item.id)) continue;
         const locked = await transaction.$queryRaw<Array<{ id: string }>>`
           SELECT "id" FROM "Post" WHERE "id" = ${item.postId} FOR UPDATE
         `;
         if (!locked.length) throw new CartError("A listing in your cart no longer exists. Refresh the cart and try again.", 409);
         const post = await transaction.post.findUnique({
           where: { id: item.postId },
-          include: { auctionRoom: { select: { status: true } } },
+          include: { auctionRoom: { select: { id: true, status: true, highestBidderId: true, currentHighestBid: true } } },
         });
-        if (!post || !isAvailable(post, buyer.id, item.quantity)) {
-          throw new CartError(`“${post?.title ?? "An item"}” is no longer available in the requested quantity.`, 409);
+        if (!post) {
+          throw new CartError("An item in your cart is no longer available. Refresh the cart and try again.", 409);
         }
-        const unitPriceCents = Math.round(post.price * 100);
+        if (item.auctionRoomId) {
+          if (item.auctionRoomId !== post.auctionRoom?.id) {
+            throw new CartError(`“${post.title}” is no longer available in the requested quantity.`, 409);
+          }
+          if (!isAuctionCartItemAvailable({ auctionRoomId: item.auctionRoomId, post }, buyer.id)) continue;
+        } else if (!isAvailable(post, buyer.id, item.quantity)) {
+          throw new CartError(`“${post.title}” is no longer available in the requested quantity.`, 409);
+        }
+        const unitPriceCents = Math.round((item.auctionRoomId && post.auctionRoom
+          ? post.auctionRoom.currentHighestBid
+          : post.price) * 100);
         if (!Number.isSafeInteger(unitPriceCents) || unitPriceCents < 0) {
           throw new CartError(`“${post.title}” has an invalid asking price.`, 409);
         }
-        purchaseLines.push({ post, quantity: item.quantity, unitPriceCents });
+        purchaseLines.push({ post, quantity: item.quantity, unitPriceCents, isAuction: Boolean(item.auctionRoomId) });
       }
 
+      if (purchaseLines.length === 0) return null;
       const subtotalCents = purchaseLines.reduce((sum, line) => sum + line.quantity * line.unitPriceCents, 0);
       if (!Number.isSafeInteger(subtotalCents)) throw new CartError("The order total is too large to process.", 400);
-
-      await verifyPaystackReference(normalizedPaymentReference, subtotalCents, buyer.id);
+      if (subtotalCents !== verifiedPayment.subtotalUsdCents) {
+        throw new CartError("The payable items changed after payment started. Contact support with your payment reference.", 409);
+      }
 
       const createdOrder = await transaction.purchaseOrder.create({
         data: {
@@ -243,14 +296,43 @@ router.post("/cart/checkout", async (request, response) => {
         include: { items: true },
       });
 
+      const sellerOrderLines = new Map<string, string[]>();
       for (const line of purchaseLines) {
+        const titles = sellerOrderLines.get(line.post.sellerId) ?? [];
+        titles.push(line.post.title);
+        sellerOrderLines.set(line.post.sellerId, titles);
+      }
+      await transaction.notification.createMany({
+        data: [
+          {
+            userId: buyer.id,
+            type: "ORDER_UPDATE",
+            title: "Order placed",
+            message: `Your payment was confirmed and your order for ${purchaseLines.length === 1 ? "1 item" : `${purchaseLines.length} items`} is recorded. You can track it in My Orders.`,
+            entityType: "ORDER",
+            entityId: createdOrder.id,
+          },
+          ...Array.from(sellerOrderLines, ([sellerId, titles]) => ({
+            userId: sellerId,
+            type: "ORDER_UPDATE" as const,
+            title: "New order received",
+            message: `A buyer placed an order for ${titles.join(", ")}. Review it in Seller Studio and arrange fulfillment.`,
+            entityType: "ORDER",
+            entityId: createdOrder.id,
+          })),
+        ],
+      });
+
+      for (const line of purchaseLines.filter((purchaseLine) => !purchaseLine.isAuction)) {
         const quantityAvailable = line.post.quantityAvailable - line.quantity;
         await transaction.post.update({
           where: { id: line.post.id },
           data: { quantityAvailable, ...(quantityAvailable === 0 ? { status: "SOLD" } : {}) },
         });
       }
-      await transaction.cartItem.deleteMany({ where: { userId: buyer.id } });
+      await transaction.cartItem.deleteMany({
+        where: { userId: buyer.id, postId: { in: purchaseLines.map((line) => line.post.id) } },
+      });
       return createdOrder;
     });
   } catch (error) {

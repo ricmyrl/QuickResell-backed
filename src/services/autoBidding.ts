@@ -93,6 +93,11 @@ export async function processAuctionAutoBid(auctionRoomId: string): Promise<Auto
         endsAt,
       },
     });
+    await transaction.cartItem.upsert({
+      where: { userId_postId: { userId: nextBidder.userId, postId: room.postId } },
+      create: { userId: nextBidder.userId, postId: room.postId, auctionRoomId },
+      update: { auctionRoomId, quantity: 1 },
+    });
     const auctionTitle = await transaction.post.findUnique({
       where: { id: room.postId },
       select: { title: true },
@@ -120,7 +125,7 @@ export async function processAuctionAutoBid(auctionRoomId: string): Promise<Auto
           userId: room.highestBidderId,
           type: "OUTBID" as const,
           title: "Scout raised the bid",
-          message: `A watchlist bidder raised “${title}” to $${proposedAmount.toFixed(2)}.`,
+          message: `A watchlist bidder raised “${title}” to $${proposedAmount.toFixed(2)}. If bidding is still active, reopen the auction and place a higher bid to get back in the lead.`,
           entityType: "auction",
           entityId: auctionRoomId,
         }]

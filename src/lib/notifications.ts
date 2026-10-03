@@ -92,7 +92,7 @@ export async function notifyBidActivity({
       userId: previousBidderId,
       type: "OUTBID",
       title: "You were outbid",
-      message: `Someone raised the price on “${auctionTitle}” to $${amount.toFixed(2)}.`,
+      message: `Someone raised “${auctionTitle}” to $${amount.toFixed(2)}. If bidding is still active, reopen the auction and place a higher bid to get back in the lead.`,
       entityType: "auction",
       entityId: auctionRoomId,
     });

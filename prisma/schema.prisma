@@ -268,6 +268,7 @@ model AuctionRoom {
   highestBidder     User?             @relation("AuctionWinner", fields: [highestBidderId], references: [id], onDelete: SetNull)
   bids              Bid[]
   watchlistItems    AuctionWatchlistItem[]
+  cartItems         CartItem[]
 
   @@index([status, endsAt])
   @@index([isPublic, status, endsAt])
@@ -288,17 +289,20 @@ model Bid {
 }
 
 model CartItem {
-  id        String   @id @default(cuid())
-  userId    String   @db.Uuid
-  postId    String
-  quantity  Int      @default(1)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  id            String      @id @default(cuid())
+  userId        String      @db.Uuid
+  postId        String
+  auctionRoomId String?
+  quantity      Int         @default(1)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  post          Post        @relation(fields: [postId], references: [id], onDelete: Cascade)
+  auctionRoom   AuctionRoom? @relation(fields: [auctionRoomId], references: [id], onDelete: Cascade)
 
   @@unique([userId, postId])
   @@index([userId, createdAt])
+  @@index([auctionRoomId])
 }
 
 model WatchlistItem {

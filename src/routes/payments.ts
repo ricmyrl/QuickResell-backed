@@ -25,7 +25,7 @@ router.post("/payments/initialize", async (request, response) => {
           quantityAvailable: true,
           sellerId: true,
           status: true,
-          auctionRoom: { select: { status: true } },
+          auctionRoom: { select: { id: true, status: true, highestBidderId: true, currentHighestBid: true } },
         },
       },
     },
@@ -35,16 +35,42 @@ router.post("/payments/initialize", async (request, response) => {
     return;
   }
 
-  const unavailableItem = cartItems.some(({ post, quantity }) =>
-    post.status !== "ACTIVE" || post.sellerId === buyer.id || post.quantityAvailable < quantity ||
-    (post.auctionRoom !== null && post.auctionRoom.status !== "CLOSED")
+  const eligibleItems = cartItems.filter((item) => {
+    if (item.auctionRoomId) {
+      return item.post.auctionRoom?.id === item.auctionRoomId
+        && item.post.auctionRoom.status === "SOLD"
+        && item.post.auctionRoom.highestBidderId === buyer.id;
+    }
+    return true;
+  });
+  if (eligibleItems.some((item) => item.auctionRoomId && item.post.auctionRoom?.highestBidderId !== buyer.id)) {
+    response.status(409).json({ error: "An auction result changed. Refresh your cart and try again." });
+    return;
+  }
+  const unavailableItem = eligibleItems.some(({ post, quantity, auctionRoomId }) =>
+    !auctionRoomId && (post.status !== "ACTIVE" || post.sellerId === buyer.id || post.quantityAvailable < quantity ||
+      (post.auctionRoom !== null && post.auctionRoom.status !== "CLOSED"))
   );
   if (unavailableItem) {
     response.status(409).json({ error: "A cart item is no longer available. Refresh your cart and try again." });
     return;
   }
 
-  const subtotalUsd = cartItems.reduce((total, { post, quantity }) => total + Math.round(post.price * 100) * quantity, 0) / 100;
+  if (eligibleItems.length === 0) {
+    response.status(409).json({ error: "No items are ready for checkout. Auction items unlock after the seller confirms your win." });
+    return;
+  }
+  if (eligibleItems.length > 100) {
+    response.status(400).json({ error: "Checkout supports up to 100 cart items at a time. Remove some items and try again." });
+    return;
+  }
+
+  const subtotalUsd = eligibleItems.reduce((total, item) => {
+    const unitPriceCents = Math.round((item.auctionRoomId && item.post.auctionRoom
+      ? item.post.auctionRoom.currentHighestBid
+      : item.post.price) * 100);
+    return total + unitPriceCents * item.quantity;
+  }, 0) / 100;
   if (!Number.isFinite(subtotalUsd) || subtotalUsd <= 0) {
     response.status(409).json({ error: "The cart total is invalid." });
     return;
@@ -83,6 +109,7 @@ router.post("/payments/initialize", async (request, response) => {
           userId: buyer.id,
           cartSubtotalUsdCents: Math.round(subtotalUsd * 100),
           paymentAmountKobo: amountCents,
+          cartItemIds: eligibleItems.map((item) => item.id),
         },
       },
       {
