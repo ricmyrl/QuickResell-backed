@@ -11,6 +11,7 @@ const router = Router();
 const feedTypes: MarketplaceFeedType[] = ["FOR_YOU", "DEALS", "NEARBY", "EXPLORE"];
 const maxFeedCandidates = 500;
 const maxListingImages = 8;
+const maxAuctionDurationHours = 30 * 24;
 
 function publicDiscussionPostWhere() {
   return {
@@ -392,7 +393,7 @@ router.delete("/watchlist/:listingId", async (request, response) => {
 
 router.post("/listings", async (request, response) => {
   const seller = currentUser(request);
-  const { title, description, categoryId, price, originalPrice, locationCampus, latitude, longitude, imageUrls, quantityAvailable = 1 } = request.body ?? {};
+  const { title, description, categoryId, price, originalPrice, locationCampus, latitude, longitude, imageUrls, quantityAvailable = 1, auctionDurationHours } = request.body ?? {};
 
   if (typeof title !== "string" || !title.trim() || title.trim().length > 120) {
     response.status(400).json({ error: "title is required and must be at most 120 characters." });
@@ -408,6 +409,11 @@ router.post("/listings", async (request, response) => {
   }
   if (typeof quantityAvailable !== "number" || !Number.isInteger(quantityAvailable) || quantityAvailable < 1 || quantityAvailable > 1000) {
     response.status(400).json({ error: "quantityAvailable must be an integer between 1 and 1000." });
+    return;
+  }
+  if (auctionDurationHours !== undefined &&
+      (typeof auctionDurationHours !== "number" || !Number.isInteger(auctionDurationHours) || auctionDurationHours < 1 || auctionDurationHours > maxAuctionDurationHours)) {
+    response.status(400).json({ error: `auctionDurationHours must be an integer between 1 and ${maxAuctionDurationHours}.` });
     return;
   }
   if (originalPrice !== undefined && originalPrice !== null &&
@@ -447,30 +453,42 @@ router.post("/listings", async (request, response) => {
     return;
   }
 
-  const listing = await prisma.post.create({
-    data: {
-      sellerId: seller.id,
-      categoryId,
-      title: title.trim(),
-      description: typeof description === "string" ? description.trim() || null : null,
-      price,
-      quantityAvailable,
-      originalPrice: originalPrice ?? null,
-      locationCampus: typeof locationCampus === "string" ? locationCampus.trim() || null : null,
-      latitude: hasValidCoordinates ? Number(latitude.toFixed(3)) : null,
-      longitude: hasValidCoordinates ? Number(longitude.toFixed(3)) : null,
-      images: {
-        create: imageUrls.map((url: string, sortOrder: number) => ({ url, sortOrder })),
+  const result = await prisma.$transaction(async (transaction) => {
+    const listing = await transaction.post.create({
+      data: {
+        sellerId: seller.id,
+        categoryId,
+        title: title.trim(),
+        description: typeof description === "string" ? description.trim() || null : null,
+        price,
+        quantityAvailable,
+        originalPrice: originalPrice ?? null,
+        locationCampus: typeof locationCampus === "string" ? locationCampus.trim() || null : null,
+        latitude: hasValidCoordinates ? Number(latitude.toFixed(3)) : null,
+        longitude: hasValidCoordinates ? Number(longitude.toFixed(3)) : null,
+        images: {
+          create: imageUrls.map((url: string, sortOrder: number) => ({ url, sortOrder })),
+        },
       },
-    },
-    include: {
-      category: true,
-      images: { orderBy: { sortOrder: "asc" } },
-      user: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true, isCampusVerified: true } },
-    },
+      include: {
+        category: true,
+        images: { orderBy: { sortOrder: "asc" } },
+        user: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true, isCampusVerified: true } },
+      },
+    });
+    const auctionRoom = auctionDurationHours === undefined ? null : await transaction.auctionRoom.create({
+      data: {
+        postId: listing.id,
+        sellerId: seller.id,
+        currentHighestBid: price,
+        endsAt: new Date(Date.now() + auctionDurationHours * 60 * 60 * 1000),
+        isPublic: true,
+      },
+    });
+    return { listing, auctionRoom };
   });
 
-  response.status(201).json({ listing });
+  response.status(201).json(result);
 });
 
 router.put("/listings/:listingId", async (request, response) => {

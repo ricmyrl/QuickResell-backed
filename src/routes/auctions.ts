@@ -10,7 +10,6 @@ import { emptyListingReactionCounts, getListingReactionCounts } from "../service
 const router = Router();
 const antiSnipeWindowMs = 10_000;
 const antiSnipeExtensionMs = 30_000;
-const maxAuctionDurationMs = 30 * 24 * 60 * 60 * 1000;
 
 export type AuctionVerdict = "ACCEPT" | "REJECT";
 type AuctionVerdictRequest = { decision: AuctionVerdict };
@@ -63,10 +62,6 @@ function currentUser(request: Request): User {
   const user = (request as AuthenticatedRequest).marketplaceUser;
   if (!user) throw new Error("Authenticated user was not attached to the request.");
   return user;
-}
-
-function isPrismaUniqueConstraintError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
 }
 
 async function lockAuctionRoom(
@@ -151,76 +146,6 @@ export async function finalizeExpiredAuctions(): Promise<void> {
     finalizationInProgress = false;
   }
 }
-
-router.use("/listings/:listingId/auction", requireSupabaseUser, requireConfirmedEmail);
-router.post("/listings/:listingId/auction", async (request, response) => {
-  const seller = currentUser(request);
-  const endsAtInput = request.body?.endsAt;
-  if (typeof endsAtInput !== "string" || !endsAtInput.trim()) {
-    response.status(400).json({ error: "endsAt must be a valid ISO-8601 date-time." });
-    return;
-  }
-
-  const endsAt = new Date(endsAtInput);
-  const now = Date.now();
-  if (!Number.isFinite(endsAt.getTime()) || endsAt.getTime() <= now ||
-      endsAt.getTime() > now + maxAuctionDurationMs) {
-    response.status(400).json({ error: "endsAt must be in the future and no more than 30 days away." });
-    return;
-  }
-
-  const listing = await prisma.post.findUnique({
-    where: { id: request.params.listingId },
-    select: { id: true, sellerId: true, price: true, status: true },
-  });
-  if (!listing) {
-    response.status(404).json({ error: "Listing not found." });
-    return;
-  }
-  if (listing.sellerId !== seller.id) {
-    response.status(403).json({ error: "Only the listing seller can create its auction." });
-    return;
-  }
-  if (listing.status !== "ACTIVE") {
-    response.status(409).json({ error: "Only active listings can be auctioned." });
-    return;
-  }
-  if (!Number.isFinite(listing.price) || listing.price < 0) {
-    response.status(409).json({ error: "The listing has an invalid starting price." });
-    return;
-  }
-  const isPublic = request.body?.isPublic ?? true;
-  if (typeof isPublic !== "boolean") {
-    response.status(400).json({ error: "isPublic must be a boolean." });
-    return;
-  }
-  const reservePrice = request.body?.reservePrice;
-  if (reservePrice !== undefined && reservePrice !== null &&
-      (typeof reservePrice !== "number" || !Number.isFinite(reservePrice) || reservePrice < listing.price)) {
-    response.status(400).json({ error: "reservePrice must be a finite number at least equal to the listing price." });
-    return;
-  }
-
-  try {
-    const auctionRoom = await prisma.auctionRoom.create({
-      data: {
-        postId: listing.id,
-        sellerId: seller.id,
-        currentHighestBid: listing.price,
-        endsAt,
-        isPublic,
-        reservePrice: reservePrice ?? null,
-      },
-      include: {
-        post: { select: { id: true, title: true, price: true, locationCampus: true, category: { select: { name: true } }, images: { take: 1, orderBy: { sortOrder: "asc" } } } },
-      },
-    });
-    response.status(201).json({ auctionRoom });
-  } catch (error) {
-    if (!isPrismaUniqueConstraintError(error)) throw error;
-    response.status(409).json({ error: "An auction room already exists for this listing." });
-  }
-});
 
 router.use("/auctions/mine", requireSupabaseUser);
 router.get("/auctions/mine", async (request, response) => {

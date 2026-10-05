@@ -39,6 +39,30 @@ function ownedListingImagePath(value: string, ownerId: string): string | null {
   }
 }
 
+function isOwnedAvatarUrl(value: unknown, ownerId: string): value is string {
+  const supabaseUrl = process.env.SUPABASE_URL;
+  if (typeof value !== "string" || !supabaseUrl) return false;
+
+  try {
+    const url = new URL(value);
+    const prefix = `/storage/v1/object/public/avatars/${ownerId}/`;
+    return url.origin === new URL(supabaseUrl).origin && url.pathname.startsWith(prefix);
+  } catch {
+    return false;
+  }
+}
+
+function ownedAvatarPath(value: string, ownerId: string): string | null {
+  if (!isOwnedAvatarUrl(value, ownerId)) return null;
+  const prefix = `/storage/v1/object/public/avatars/`;
+  try {
+    const path = decodeURIComponent(new URL(value).pathname.slice(prefix.length));
+    return path.startsWith(`${ownerId}/`) && path.length > ownerId.length + 1 ? path : null;
+  } catch {
+    return null;
+  }
+}
+
 router.use("/account", requireSupabaseUser);
 
 router.get("/account", async (request, response) => {
@@ -47,6 +71,7 @@ router.get("/account", async (request, response) => {
     profile: {
       displayName: user.displayName,
       email: user.email,
+      avatarUrl: user.avatarUrl,
       preferredDormOrCampus: user.preferredDormOrCampus,
       budgetPreference: user.budgetPreference,
     },
@@ -55,7 +80,7 @@ router.get("/account", async (request, response) => {
 
 router.patch("/account", async (request, response) => {
   const user = currentUser(request);
-  const { preferredDormOrCampus, budgetPreference } = request.body ?? {};
+  const { preferredDormOrCampus, budgetPreference, avatarUrl } = request.body ?? {};
 
   if (typeof preferredDormOrCampus !== "string" || preferredDormOrCampus.trim().length > 120) {
     response.status(400).json({ error: "Campus or area must be 120 characters or fewer." });
@@ -66,16 +91,22 @@ router.patch("/account", async (request, response) => {
     response.status(400).json({ error: "Budget must be between 0 and 100,000, or left blank." });
     return;
   }
+  if (avatarUrl !== undefined && avatarUrl !== null && !isOwnedAvatarUrl(avatarUrl, user.id)) {
+    response.status(400).json({ error: "avatarUrl must be a public avatar image uploaded to your own account folder." });
+    return;
+  }
 
   const profile = await prisma.user.update({
     where: { id: user.id },
     data: {
       preferredDormOrCampus: preferredDormOrCampus.trim() || null,
       budgetPreference,
+      ...(avatarUrl !== undefined ? { avatarUrl } : {}),
     },
     select: {
       displayName: true,
       email: true,
+      avatarUrl: true,
       preferredDormOrCampus: true,
       budgetPreference: true,
     },
@@ -103,12 +134,21 @@ router.delete("/account", async (request, response) => {
   const imagePaths = Array.from(new Set(imageRows
     .map(({ url }) => ownedListingImagePath(url, user.id))
     .filter((path): path is string => path !== null)));
+  const avatarPath = user.avatarUrl ? ownedAvatarPath(user.avatarUrl, user.id) : null;
   const imageBucket = process.env.SUPABASE_LISTING_BUCKET ?? "listing-images";
   for (let index = 0; index < imagePaths.length; index += 100) {
     const { error } = await admin.storage.from(imageBucket).remove(imagePaths.slice(index, index + 100));
     if (error) {
       console.error("Account listing images could not be removed.", { userId: user.id, error: error.message });
       response.status(502).json({ error: "Your listing photos could not be deleted. No account records were removed; please retry or contact support." });
+      return;
+    }
+  }
+  if (avatarPath) {
+    const { error } = await admin.storage.from("avatars").remove([avatarPath]);
+    if (error) {
+      console.error("Account avatar could not be removed.", { userId: user.id, error: error.message });
+      response.status(502).json({ error: "Your profile photo could not be deleted. No account records were removed; please retry or contact support." });
       return;
     }
   }
