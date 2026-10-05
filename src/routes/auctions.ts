@@ -301,7 +301,7 @@ router.get("/auctions", optionalSupabaseUser, async (request, response) => {
           locationCampus: true,
           category: { select: { name: true } },
           images: { take: 1, orderBy: { sortOrder: "asc" } },
-          _count: { select: { listingReactions: true } },
+          _count: { select: { comments: true, listingReactions: true } },
           listingReactions: viewerId
             ? { where: { userId: viewerId }, select: { type: true } }
             : { take: 0, select: { type: true } },
@@ -346,7 +346,7 @@ router.get("/auctions/:auctionRoomId", optionalSupabaseUser, async (request, res
           locationCampus: true,
           category: { select: { name: true } },
           images: { take: 1, orderBy: { sortOrder: "asc" } },
-          _count: { select: { listingReactions: true } },
+          _count: { select: { comments: true, listingReactions: true } },
           listingReactions: viewerId
             ? { where: { userId: viewerId }, select: { type: true } }
             : { take: 0, select: { type: true } },
