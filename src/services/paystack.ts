@@ -24,12 +24,8 @@ export function normalizePaystackBanks(
       typeof bank.name === "string" &&
       typeof bank.code === "string" &&
       majorNigerianBankCodes.has(bank.code) &&
-      (bank.active !== false || bank.code === "044"))
+      bank.active !== false)
     .map(({ name, code }) => ({ name, code }));
-
-  if (!normalized.some((bank) => bank.code === "044" || /^access bank\b/i.test(bank.name))) {
-    normalized.push({ name: "Access Bank", code: "044" });
-  }
 
   return normalized.sort((left, right) => left.name.localeCompare(right.name));
 }

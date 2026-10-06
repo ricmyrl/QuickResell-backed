@@ -41,11 +41,11 @@ test("NIN and BVN values are normalized and must contain 11 digits", () => {
   assert.throws(() => normalizeNigerianIdentityNumber("BVN", "1234567890A"), /11-digit BVN/);
 });
 
-test("Paystack bank list always includes Access Bank (044)", () => {
-  assert.deepEqual(normalizePaystackBanks([]), [{ name: "Access Bank", code: "044" }]);
+test("Paystack bank list does not invent banks absent from the provider response", () => {
+  assert.deepEqual(normalizePaystackBanks([]), []);
   assert.deepEqual(
     normalizePaystackBanks([{ name: "Access Bank", code: "044", active: false }]),
-    [{ name: "Access Bank", code: "044" }],
+    [],
   );
 });
 
