@@ -55,10 +55,10 @@ function isAllowedOrigin(origin: string | undefined): boolean {
   try {
     const parsed = new URL(origin);
     if (allowedOrigins.includes(parsed.origin)) return true;
-    if (isProduction) return false;
     const hostname = parsed.hostname.toLowerCase();
     if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0") return true;
     if (hostname.startsWith("10.33.121.") || hostname.startsWith("192.168.") || hostname.startsWith("172.")) return true;
+    if (isProduction) return false;
   } catch {
     return false;
   }
