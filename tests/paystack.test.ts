@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
-import { getPaystackCallbackUrl, getPaystackSecretKey, verifyPaystackWebhookSignature } from "../src/services/paystack.js";
+import { getPaystackCallbackUrl, getPaystackSecretKey, normalizeNigerianIdentityNumber, verifyPaystackWebhookSignature } from "../src/services/paystack.js";
 
 test("production requires a live Paystack secret key", () => {
   assert.equal(getPaystackSecretKey({ NODE_ENV: "development", PAYSTACK_SECRET_KEY: "sk_test_example" }), "sk_test_example");
@@ -32,4 +32,11 @@ test("webhook signatures require an exact HMAC-SHA512 match", () => {
   assert.equal(verifyPaystackWebhookSignature(Buffer.from("{}"), signature, secret), false);
   assert.equal(verifyPaystackWebhookSignature(body, undefined, secret), false);
   assert.equal(verifyPaystackWebhookSignature(body, "invalid", secret), false);
+});
+
+test("NIN and BVN values are normalized and must contain 11 digits", () => {
+  assert.equal(normalizeNigerianIdentityNumber("NIN", "123-456-78901"), "12345678901");
+  assert.equal(normalizeNigerianIdentityNumber("BVN", "12345678901"), "12345678901");
+  assert.throws(() => normalizeNigerianIdentityNumber("NIN", "1234567890"), /11-digit NIN/);
+  assert.throws(() => normalizeNigerianIdentityNumber("BVN", "1234567890A"), /11-digit BVN/);
 });

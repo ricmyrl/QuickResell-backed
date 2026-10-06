@@ -4,7 +4,7 @@ import { Router, type Request } from "express";
 import type { User } from "../generated/prisma/client.js";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
-import { createPaystackTransferRecipient } from "../services/paystack.js";
+import { createPaystackTransferRecipient, normalizeNigerianIdentityNumber, validatePaystackIdentityAndBankAccount } from "../services/paystack.js";
 import { getPaystackSecretKey } from "../services/paystack.js";
 import {
   getSellerVerificationProvider,
@@ -196,38 +196,12 @@ router.post("/seller/verification/identity/start", async (request, response) => 
       response.status(409).json({ error: "Your identity is already verified." });
       return;
     }
-
-    const reference = randomUUID();
-    const autoApproveManualVerification = process.env.SELLER_VERIFICATION_AUTO_APPROVE_MANUAL?.trim().toLowerCase() !== "false";
-    const identityStatus = autoApproveManualVerification ? "VERIFIED" : "REVIEW_REQUIRED";
-
-    await prisma.sellerVerification.upsert({
-      where: { userId: user.id },
-      create: { userId: user.id, identityStatus, identityReference: reference },
-      update: {
-        identityStatus,
-        payoutStatus: "NOT_STARTED",
-        identityReference: reference,
-        identityJobId: null,
-        smileUserId: null,
-        verifiedNameHash: null,
-        bankCode: null,
-        bankName: null,
-        bankAccountLast4: null,
-        failureCode: null,
-        identityVerifiedAt: identityStatus === "VERIFIED" ? new Date() : null,
-        payoutVerifiedAt: null,
-      },
-    });
-
     response.json({
       provider: "manual_review",
-      reference,
-      requiresManualReview: !autoApproveManualVerification,
-      autoApproved: autoApproveManualVerification,
-      message: autoApproveManualVerification
-        ? "Verification is available in demo mode; continue to payout account verification."
-        : "Your seller identity has been submitted for manual review.",
+      reference: randomUUID(),
+      requiresManualReview: false,
+      autoApproved: false,
+      message: "Paystack will validate your NIN or BVN together with your legal name and payout account.",
     });
     return;
   }
@@ -287,8 +261,15 @@ router.post("/seller/verification/identity/start", async (request, response) => 
 
 router.post("/seller/verification/identity/manual-review", async (request, response) => {
   const user = currentUser(request);
+  if (getSellerVerificationProvider() !== "manual_review") {
+    response.status(409).json({ error: "Paystack identity verification is not the active verification provider." });
+    return;
+  }
   const legalName = request.body?.legalName;
   const idType = request.body?.idType;
+  const idNumber = request.body?.idNumber;
+  const bankCode = request.body?.bankCode;
+  const accountNumber = request.body?.accountNumber;
   if (request.body?.consent !== true) {
     response.status(400).json({ error: "Consent to manual identity review is required to continue." });
     return;
@@ -297,35 +278,138 @@ router.post("/seller/verification/identity/manual-review", async (request, respo
     response.status(400).json({ error: "Provide the name matching your legal identity document." });
     return;
   }
-  if (typeof idType !== "string" || !["NIN", "BVN", "Passport"].includes(idType)) {
-    response.status(400).json({ error: "Choose a supported identity document type." });
+  if (idType !== "NIN" && idType !== "BVN") {
+    response.status(400).json({ error: "Paystack verification supports a Nigerian NIN or BVN. Use Smile ID for passports." });
+    return;
+  }
+  if (typeof idNumber !== "string" || !idNumber.trim()) {
+    response.status(400).json({ error: `Enter your ${idType} number to continue.` });
+    return;
+  }
+  if (typeof bankCode !== "string" || !/^\d{3,6}$/.test(bankCode) ||
+      typeof accountNumber !== "string" || !/^\d{10}$/.test(accountNumber)) {
+    response.status(400).json({ error: "Choose a bank and enter its 10-digit account number to validate your identity." });
+    return;
+  }
+  const existing = await prisma.sellerVerification.findUnique({ where: { userId: user.id } });
+  if (existing?.identityStatus === "VERIFIED" && existing.payoutStatus === "VERIFIED") {
+    response.status(409).json({ error: "Your identity and payout account are already verified." });
     return;
   }
 
-  const hashSecret = nameHashSecret();
-  const reference = randomUUID();
-  const autoApproveManualVerification = process.env.SELLER_VERIFICATION_AUTO_APPROVE_MANUAL?.trim().toLowerCase() !== "false";
-  const identityStatus = autoApproveManualVerification ? "VERIFIED" : "REVIEW_REQUIRED";
-  const verification = await prisma.sellerVerification.upsert({
-    where: { userId: user.id },
-    create: { userId: user.id, identityStatus, identityReference: reference, verifiedNameHash: hashVerifiedName(legalName, hashSecret), identityVerifiedAt: identityStatus === "VERIFIED" ? new Date() : null },
-    update: {
-      identityStatus,
-      identityReference: reference,
-      verifiedNameHash: hashVerifiedName(legalName, hashSecret),
-      identityVerifiedAt: identityStatus === "VERIFIED" ? new Date() : null,
-      failureCode: null,
-      identityJobId: null,
-      smileUserId: null,
-    },
-  });
+  let hashSecret: string;
+  try {
+    normalizeNigerianIdentityNumber(idType, idNumber);
+    hashSecret = nameHashSecret();
+  } catch (error) {
+    const configurationError = error instanceof Error && /SELLER_VERIFICATION_HASH_SECRET/.test(error.message);
+    const message = error instanceof Error ? error.message : "This identity document could not be validated.";
+    response.status(configurationError ? 503 : 422).json({ error: message });
+    return;
+  }
 
-  response.json({
-    status: verification.identityStatus,
-    provider: "manual_review",
-    requiresManualReview: !autoApproveManualVerification,
-    autoApproved: autoApproveManualVerification,
-  });
+  try {
+    await validatePaystackIdentityAndBankAccount({
+      legalName: legalName.trim(),
+      idType,
+      idNumber,
+      accountNumber,
+    });
+  } catch (error) {
+    const status = axios.isAxiosError(error) && error.response?.status
+      ? (error.response.status === 401 || error.response.status === 403 ? 503 : error.response.status < 500 ? 422 : 502)
+      : error instanceof Error && /SELLER_VERIFICATION_HASH_SECRET|PAYSTACK_SECRET_KEY/.test(error.message)
+        ? 503
+        : error instanceof Error && /could not validate/i.test(error.message)
+          ? 422
+          : 502;
+    console.error("Paystack identity check failed.", {
+      status: axios.isAxiosError(error) ? error.response?.status : undefined,
+      code: axios.isAxiosError(error) ? error.code : undefined,
+    });
+    response.status(status).json({
+      error: status === 422
+        ? `Paystack could not validate this ${idType} and bank account. Check the details and try again.`
+        : "Paystack identity validation is temporarily unavailable. Please retry.",
+    });
+    return;
+  }
+
+  try {
+    const secretKey = getPaystackSecretKey();
+    const resolved = await axios.get<{ status?: boolean; data?: { account_name?: unknown; account_number?: unknown } }>(
+      "https://api.paystack.co/bank/resolve",
+      { headers: { Authorization: `Bearer ${secretKey}` }, params: { account_number: accountNumber, bank_code: bankCode }, timeout: 15_000 },
+    );
+    const accountName = resolved.data.data?.account_name;
+    if (resolved.data.status !== true || typeof accountName !== "string" || resolved.data.data?.account_number !== accountNumber) {
+      response.status(422).json({ error: "Paystack could not verify this bank account." });
+      return;
+    }
+    if (!hashPayoutNameMatches(accountName, hashVerifiedName(legalName, hashSecret), hashSecret)) {
+      response.status(422).json({ error: "The account holder name does not match your legal identity. Use an account in your own name." });
+      return;
+    }
+
+    const bank = cachedBanks.find((item) => item.code === bankCode);
+    const recipient = await createPaystackTransferRecipient({ name: accountName, accountNumber, bankCode });
+    const now = new Date();
+    const reference = randomUUID();
+    const verifiedNameHash = hashVerifiedName(legalName, hashSecret);
+    await prisma.sellerVerification.upsert({
+      where: { userId: user.id },
+      create: {
+        userId: user.id,
+        identityStatus: "VERIFIED",
+        payoutStatus: "VERIFIED",
+        identityReference: reference,
+        verifiedNameHash,
+        identityVerifiedAt: now,
+        bankCode,
+        bankName: bank?.name ?? "Verified Nigerian bank",
+        bankAccountNumber: accountNumber,
+        bankAccountName: accountName,
+        bankAccountLast4: accountNumber.slice(-4),
+        paystackRecipientCode: recipient.recipient_code ?? null,
+        payoutVerifiedAt: now,
+      },
+      update: {
+        identityStatus: "VERIFIED",
+        payoutStatus: "VERIFIED",
+        identityReference: reference,
+        identityJobId: null,
+        smileUserId: null,
+        verifiedNameHash,
+        identityVerifiedAt: now,
+        bankCode,
+        bankName: bank?.name ?? "Verified Nigerian bank",
+        bankAccountNumber: accountNumber,
+        bankAccountName: accountName,
+        bankAccountLast4: accountNumber.slice(-4),
+        paystackRecipientCode: recipient.recipient_code ?? null,
+        payoutVerifiedAt: now,
+        failureCode: null,
+      },
+    });
+
+    response.json({
+      status: "VERIFIED",
+      provider: "manual_review",
+      requiresManualReview: false,
+      autoApproved: true,
+      payoutStatus: "VERIFIED",
+      bankName: bank?.name ?? "Verified Nigerian bank",
+      accountLast4: accountNumber.slice(-4),
+    });
+  } catch (error) {
+    console.error("Paystack payout account setup failed.", {
+      status: axios.isAxiosError(error) ? error.response?.status : undefined,
+      code: axios.isAxiosError(error) ? error.code : undefined,
+      message: error instanceof Error && !axios.isAxiosError(error) ? error.message : undefined,
+    });
+    response.status(502).json({ error: "Paystack could not complete identity and bank-account validation. Please retry." });
+  }
+
 });
 
 router.post("/seller/verification/identity/submitted", async (request, response) => {

@@ -92,6 +92,57 @@ export function getPaystackSecretKey(environment: NodeJS.ProcessEnv = process.en
   return secretKey;
 }
 
+export function normalizeNigerianIdentityNumber(
+  idType: "NIN" | "BVN" | "Passport",
+  value: string,
+): string {
+  const trimmed = value?.trim() ?? "";
+  if (idType === "Passport") return trimmed;
+  const normalized = trimmed.replace(/[\s-]/g, "");
+  if (!/^\d{11}$/.test(normalized)) {
+    throw new Error(`Enter a valid 11-digit ${idType} number.`);
+  }
+  return normalized;
+}
+
+export async function validatePaystackIdentityAndBankAccount({
+  legalName,
+  idType,
+  idNumber,
+  accountNumber,
+  environment = process.env,
+}: {
+  legalName: string
+  idType: "NIN" | "BVN"
+  idNumber: string
+  accountNumber: string
+  environment?: NodeJS.ProcessEnv
+}): Promise<void> {
+  const secretKey = getPaystackSecretKey(environment);
+  const normalized = normalizeNigerianIdentityNumber(idType, idNumber);
+  const response = await axios.post<{ status?: boolean; message?: string }>(
+    "https://api.paystack.co/bank/validate",
+    {
+      account_number: accountNumber,
+      account_name: legalName,
+      account_type: "personal",
+      document_type: "identityNumber",
+      document_number: normalized,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${secretKey}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 15_000,
+    },
+  );
+
+  if (response.data?.status !== true) {
+    throw new Error(response.data?.message ?? `Paystack could not validate this ${idType} and bank account.`);
+  }
+}
+
 export function getPaystackCallbackUrl(
   transactionType: "CART_CHECKOUT" | "WALLET_TOPUP",
   environment: NodeJS.ProcessEnv = process.env,
