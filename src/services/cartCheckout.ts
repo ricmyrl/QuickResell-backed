@@ -1,6 +1,7 @@
 import type { Post } from "../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
-import { verifyPaystackTransaction } from "./paystack.js";
+import { getExchangeRates } from "./exchangeRates.js";
+import { convertUsdToPayoutKobo, initiateSellerPayout, verifyPaystackTransaction } from "./paystack.js";
 
 export class CartPaymentError extends Error {
   constructor(message: string, readonly status: number) {
@@ -180,6 +181,47 @@ export async function finalizeCartCheckout(reference: string, buyerId: string) {
     await transaction.cartItem.deleteMany({
       where: { userId: buyerId, postId: { in: purchaseLines.map((line) => line.post.id) } },
     });
+
+    const payoutGroups = new Map<string, number>();
+    for (const line of purchaseLines) {
+      const sellerTotal = payoutGroups.get(line.post.sellerId) ?? 0;
+      payoutGroups.set(line.post.sellerId, sellerTotal + line.quantity * line.unitPriceCents);
+    }
+
+    const payoutRate = await getExchangeRates();
+    for (const [sellerId, totalUsdCents] of payoutGroups) {
+      try {
+        const verification = await transaction.sellerVerification.findUnique({
+          where: { userId: sellerId },
+          select: {
+            payoutStatus: true,
+            bankAccountNumber: true,
+            bankAccountName: true,
+            paystackRecipientCode: true,
+          },
+        });
+
+        if (!verification || verification.payoutStatus !== "VERIFIED" || !verification.bankAccountNumber || !verification.bankAccountName || !verification.paystackRecipientCode) {
+          continue;
+        }
+
+        const payoutKobo = convertUsdToPayoutKobo(totalUsdCents / 100, payoutRate.rates.NGN);
+        if (payoutKobo <= 0) continue;
+
+        await initiateSellerPayout({
+          amountKobo: payoutKobo,
+          recipientCode: verification.paystackRecipientCode,
+          reason: `QuickResell seller payout for order ${createdOrder.id}`,
+        });
+      } catch (error) {
+        console.error("Seller payout could not be sent.", {
+          sellerId,
+          orderId: createdOrder.id,
+          error,
+        });
+      }
+    }
+
     return createdOrder;
   });
 }

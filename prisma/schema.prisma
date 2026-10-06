@@ -132,7 +132,10 @@ model SellerVerification {
   verifiedNameHash     String?
   bankCode             String?
   bankName             String?
+  bankAccountNumber    String?
+  bankAccountName      String?
   bankAccountLast4     String?
+  paystackRecipientCode String?
   failureCode          String?
   identityVerifiedAt   DateTime?
   payoutVerifiedAt     DateTime?

@@ -9,6 +9,79 @@ export type PaystackTransaction = {
   metadata?: Record<string, unknown>;
 };
 
+export function convertUsdToPayoutKobo(usdAmount: number, ngnRate: number): number {
+  if (!Number.isFinite(usdAmount) || usdAmount <= 0) return 0;
+  if (!Number.isFinite(ngnRate) || ngnRate <= 0) throw new Error("A valid NGN exchange rate is required for payouts.");
+  return Math.round(usdAmount * ngnRate * 100);
+}
+
+export async function createPaystackTransferRecipient({
+  name,
+  accountNumber,
+  bankCode,
+}: {
+  name: string
+  accountNumber: string
+  bankCode: string
+}): Promise<{ recipient_code?: string; details?: { account_number?: string; bank_code?: string } }> {
+  const response = await axios.post<{ data?: { recipient_code?: string; details?: { account_number?: string; bank_code?: string } } }>(
+    "https://api.paystack.co/transferrecipient",
+    {
+      type: "nuban",
+      name,
+      account_number: accountNumber,
+      bank_code: bankCode,
+      currency: "NGN",
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${getPaystackSecretKey()}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 15_000,
+    },
+  );
+
+  const recipient = response.data?.data;
+  if (!recipient?.recipient_code) {
+    throw new Error("Paystack did not return a transfer recipient.");
+  }
+  return recipient;
+}
+
+export async function initiateSellerPayout({
+  amountKobo,
+  recipientCode,
+  reason,
+}: {
+  amountKobo: number
+  recipientCode: string
+  reason: string
+}): Promise<{ reference?: string; transfer_code?: string; status?: string }> {
+  const response = await axios.post<{ data?: { reference?: string; transfer_code?: string; status?: string } }>(
+    "https://api.paystack.co/transfer",
+    {
+      source: "balance",
+      reason,
+      amount: amountKobo,
+      recipient: recipientCode,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${getPaystackSecretKey()}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 15_000,
+    },
+  );
+
+  const transfer = response.data?.data;
+  if (!transfer) {
+    throw new Error("Paystack did not create a transfer for the seller.");
+  }
+  return transfer;
+}
+
 export function getPaystackSecretKey(environment: NodeJS.ProcessEnv = process.env): string {
   const secretKey = environment.PAYSTACK_SECRET_KEY?.trim();
   if (!secretKey) throw new Error("PAYSTACK_SECRET_KEY is not configured.");

@@ -4,8 +4,10 @@ import { Router, type Request } from "express";
 import type { User } from "../generated/prisma/client.js";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
+import { createPaystackTransferRecipient } from "../services/paystack.js";
 import { getPaystackSecretKey } from "../services/paystack.js";
 import {
+  getSellerVerificationProvider,
   getSmileConfiguration,
   getSmileJobStatus,
   hashPayoutNameMatches,
@@ -183,7 +185,50 @@ router.get("/seller/verification/banks", async (_request, response) => {
 router.post("/seller/verification/identity/start", async (request, response) => {
   const user = currentUser(request);
   if (request.body?.consent !== true) {
-    response.status(400).json({ error: "Consent to identity and biometric processing is required to continue." });
+    response.status(400).json({ error: "Consent to identity verification is required to continue." });
+    return;
+  }
+
+  const provider = getSellerVerificationProvider();
+  if (provider === "manual_review") {
+    const existing = await prisma.sellerVerification.findUnique({ where: { userId: user.id } });
+    if (existing?.identityStatus === "VERIFIED") {
+      response.status(409).json({ error: "Your identity is already verified." });
+      return;
+    }
+
+    const reference = randomUUID();
+    const autoApproveManualVerification = process.env.SELLER_VERIFICATION_AUTO_APPROVE_MANUAL?.trim().toLowerCase() !== "false";
+    const identityStatus = autoApproveManualVerification ? "VERIFIED" : "REVIEW_REQUIRED";
+
+    await prisma.sellerVerification.upsert({
+      where: { userId: user.id },
+      create: { userId: user.id, identityStatus, identityReference: reference },
+      update: {
+        identityStatus,
+        payoutStatus: "NOT_STARTED",
+        identityReference: reference,
+        identityJobId: null,
+        smileUserId: null,
+        verifiedNameHash: null,
+        bankCode: null,
+        bankName: null,
+        bankAccountLast4: null,
+        failureCode: null,
+        identityVerifiedAt: identityStatus === "VERIFIED" ? new Date() : null,
+        payoutVerifiedAt: null,
+      },
+    });
+
+    response.json({
+      provider: "manual_review",
+      reference,
+      requiresManualReview: !autoApproveManualVerification,
+      autoApproved: autoApproveManualVerification,
+      message: autoApproveManualVerification
+        ? "Verification is available in demo mode; continue to payout account verification."
+        : "Your seller identity has been submitted for manual review.",
+    });
     return;
   }
 
@@ -223,6 +268,7 @@ router.post("/seller/verification/identity/start", async (request, response) => 
     },
   });
   response.json({
+    provider: "smile",
     reference,
     token,
     environment: configuration.environment,
@@ -236,6 +282,49 @@ router.post("/seller/verification/identity/start", async (request, response) => 
     },
     idSelection: { NG: ["NIN", "BVN"] },
     partnerParams: { internal_reference: reference },
+  });
+});
+
+router.post("/seller/verification/identity/manual-review", async (request, response) => {
+  const user = currentUser(request);
+  const legalName = request.body?.legalName;
+  const idType = request.body?.idType;
+  if (request.body?.consent !== true) {
+    response.status(400).json({ error: "Consent to manual identity review is required to continue." });
+    return;
+  }
+  if (typeof legalName !== "string" || !legalName.trim()) {
+    response.status(400).json({ error: "Provide the name matching your legal identity document." });
+    return;
+  }
+  if (typeof idType !== "string" || !["NIN", "BVN", "Passport"].includes(idType)) {
+    response.status(400).json({ error: "Choose a supported identity document type." });
+    return;
+  }
+
+  const hashSecret = nameHashSecret();
+  const reference = randomUUID();
+  const autoApproveManualVerification = process.env.SELLER_VERIFICATION_AUTO_APPROVE_MANUAL?.trim().toLowerCase() !== "false";
+  const identityStatus = autoApproveManualVerification ? "VERIFIED" : "REVIEW_REQUIRED";
+  const verification = await prisma.sellerVerification.upsert({
+    where: { userId: user.id },
+    create: { userId: user.id, identityStatus, identityReference: reference, verifiedNameHash: hashVerifiedName(legalName, hashSecret), identityVerifiedAt: identityStatus === "VERIFIED" ? new Date() : null },
+    update: {
+      identityStatus,
+      identityReference: reference,
+      verifiedNameHash: hashVerifiedName(legalName, hashSecret),
+      identityVerifiedAt: identityStatus === "VERIFIED" ? new Date() : null,
+      failureCode: null,
+      identityJobId: null,
+      smileUserId: null,
+    },
+  });
+
+  response.json({
+    status: verification.identityStatus,
+    provider: "manual_review",
+    requiresManualReview: !autoApproveManualVerification,
+    autoApproved: autoApproveManualVerification,
   });
 });
 
@@ -341,13 +430,21 @@ router.post("/seller/verification/payout-account", async (request, response) => 
       return;
     }
     const bank = cachedBanks.find((item) => item.code === bankCode);
+    const recipient = await createPaystackTransferRecipient({
+      name: accountName,
+      accountNumber,
+      bankCode,
+    });
     await prisma.sellerVerification.update({
       where: { id: verification.id },
       data: {
         payoutStatus: "VERIFIED",
         bankCode,
         bankName: bank?.name ?? "Verified Nigerian bank",
+        bankAccountNumber: accountNumber,
+        bankAccountName: accountName,
         bankAccountLast4: accountNumber.slice(-4),
+        paystackRecipientCode: recipient.recipient_code ?? null,
         payoutVerifiedAt: new Date(),
         failureCode: null,
       },
