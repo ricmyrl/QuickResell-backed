@@ -108,41 +108,51 @@ export async function finalizeExpiredAuctions(): Promise<void> {
 
   try {
     const now = new Date();
-    await prisma.$transaction(async (transaction) => {
-      await transaction.$executeRaw`
-        WITH expired AS (
-          SELECT "id"
-          FROM "AuctionRoom"
-          WHERE "status" = 'ACTIVE'::"AuctionRoomStatus"
-            AND "endsAt" <= ${now}
-          ORDER BY "endsAt" ASC
-          LIMIT 100
-          FOR UPDATE SKIP LOCKED
-        )
-        UPDATE "AuctionRoom" AS room
-        SET "status" = CASE
-              WHEN room."highestBidderId" IS NOT NULL
-                AND (room."reservePrice" IS NULL OR room."currentHighestBid" >= room."reservePrice")
-              THEN 'PENDING_APPROVAL'::"AuctionRoomStatus"
-              ELSE 'CLOSED'::"AuctionRoomStatus"
-            END,
-            "updatedAt" = ${now}
-        FROM expired
-        WHERE room."id" = expired."id"
-      `;
-      await transaction.$executeRaw`
-        DELETE FROM "CartItem" AS cart
-        USING "AuctionRoom" AS room
-        WHERE cart."auctionRoomId" = room."id"
-          AND (
-            room."status" = 'CLOSED'::"AuctionRoomStatus"
-            OR (
-              room."status" = 'PENDING_APPROVAL'::"AuctionRoomStatus"
-              AND room."highestBidderId" IS DISTINCT FROM cart."userId"
-            )
+    await prisma.$transaction(
+      async (transaction) => {
+        await transaction.$executeRaw`
+          WITH expired AS (
+            SELECT "id"
+            FROM "AuctionRoom"
+            WHERE "status" = 'ACTIVE'::"AuctionRoomStatus"
+              AND "endsAt" <= ${now}
+            ORDER BY "endsAt" ASC
+            LIMIT 100
+            FOR UPDATE SKIP LOCKED
           )
-      `;
-    });
+          UPDATE "AuctionRoom" AS room
+          SET "status" = CASE
+                WHEN room."highestBidderId" IS NOT NULL
+                  AND (room."reservePrice" IS NULL OR room."currentHighestBid" >= room."reservePrice")
+                THEN 'PENDING_APPROVAL'::"AuctionRoomStatus"
+                ELSE 'CLOSED'::"AuctionRoomStatus"
+              END,
+              "updatedAt" = ${now}
+          FROM expired
+          WHERE room."id" = expired."id"
+        `;
+        await transaction.$executeRaw`
+          DELETE FROM "CartItem" AS cart
+          USING "AuctionRoom" AS room
+          WHERE cart."auctionRoomId" = room."id"
+            AND (
+              room."status" = 'CLOSED'::"AuctionRoomStatus"
+              OR (
+                room."status" = 'PENDING_APPROVAL'::"AuctionRoomStatus"
+                AND room."highestBidderId" IS DISTINCT FROM cart."userId"
+              )
+            )
+        `;
+      },
+      { maxWait: 2_000, timeout: 5_000 },
+    );
+  } catch (error) {
+    const code = typeof error === "object" && error !== null && "code" in error ? String((error as { code?: unknown }).code) : "";
+    if (code === "P2028") {
+      console.warn("Skipping expired-auction finalization because the database transaction timed out.");
+      return;
+    }
+    throw error;
   } finally {
     finalizationInProgress = false;
   }
