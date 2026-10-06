@@ -13,8 +13,11 @@ import marketplaceRouter from "./routes/marketplace.js";
 import notificationsRouter from "./routes/notifications.js";
 import ordersRouter from "./routes/orders.js";
 import paymentsRouter from "./routes/payments.js";
+import paystackWebhookRouter from "./routes/paystackWebhook.js";
+import sellerVerificationRouter from "./routes/sellerVerification.js";
 import scoutRouter from "./routes/scout.js";
 import walletRouter from "./routes/wallet.js";
+import { getPaystackSecretKey } from "./services/paystack.js";
 
 const requiredEnvironment = ["SUPABASE_URL"];
 if (!process.env.DATABASE_URL && !process.env.DIRECT_URL) {
@@ -29,6 +32,7 @@ if (!process.env.SUPABASE_ANON_KEY && !process.env.SUPABASE_PUBLISHABLE_KEY) {
 
 const app = express();
 const isProduction = process.env.NODE_ENV === "production";
+if (isProduction) getPaystackSecretKey();
 const frontendUrl = process.env.FRONTEND_URL ?? (isProduction ? "" : "http://localhost:5173");
 if (isProduction && !frontendUrl.trim()) {
   throw new Error("FRONTEND_URL must be configured in production.");
@@ -78,6 +82,7 @@ app.use(cors({
   },
   credentials: true,
 }));
+app.use("/api", paystackWebhookRouter);
 app.use(express.json({ limit: "64kb" }));
 
 app.get("/health", (_request, response) => response.json({ status: "ok" }));
@@ -85,6 +90,7 @@ app.use("/api", currencyRouter);
 app.use("/api", accountRouter);
 app.use("/api", auctionWatchlistRouter);
 app.use("/api", marketplaceRouter);
+app.use("/api", sellerVerificationRouter);
 app.use("/api", notificationsRouter);
 app.use("/api", ordersRouter);
 app.use("/api", conversationsRouter);

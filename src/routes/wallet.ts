@@ -4,18 +4,10 @@ import { Router } from "express";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
 import { usdToNgnKobo } from "../services/exchangeRates.js";
+import { getPaystackCallbackUrl, getPaystackSecretKey } from "../services/paystack.js";
+import { finalizeWalletTopUp, WalletPaymentError } from "../services/walletPayments.js";
 
 const router = Router();
-
-type PaystackVerification = {
-  data?: {
-    status?: unknown;
-    reference?: unknown;
-    currency?: unknown;
-    amount?: unknown;
-    metadata?: Record<string, unknown>;
-  };
-};
 
 router.use("/wallet", requireSupabaseUser, requireConfirmedEmail);
 
@@ -61,9 +53,11 @@ router.post("/wallet/topups/initialize", async (request, response) => {
     return;
   }
 
-  const secretKey = process.env.PAYSTACK_SECRET_KEY;
-  if (!secretKey) {
-    response.status(500).json({ error: "PAYSTACK_SECRET_KEY is not configured." });
+  let secretKey: string;
+  try {
+    secretKey = getPaystackSecretKey();
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Paystack is not configured." });
     return;
   }
 
@@ -109,6 +103,7 @@ router.post("/wallet/topups/initialize", async (request, response) => {
         amount: paymentAmountKobo,
         currency: "NGN",
         reference,
+        callback_url: getPaystackCallbackUrl("WALLET_TOPUP"),
         metadata: {
           transactionType: "WALLET_TOPUP",
           walletTransactionId: transaction.id,
@@ -122,6 +117,7 @@ router.post("/wallet/topups/initialize", async (request, response) => {
           Authorization: `Bearer ${secretKey}`,
           "Content-Type": "application/json",
         },
+        timeout: 15_000,
       },
     );
 
@@ -168,72 +164,16 @@ router.post("/wallet/topups/verify/:reference", async (request, response) => {
     return;
   }
 
-  const transaction = await prisma.walletTransaction.findFirst({
-    where: { paymentReference: reference, wallet: { userId: user.id } },
-    include: { wallet: { select: { id: true } } },
-  });
-  if (!transaction || transaction.status === "FAILED") {
-    response.status(404).json({ error: "This wallet deposit could not be found." });
-    return;
-  }
-
-  const secretKey = process.env.PAYSTACK_SECRET_KEY;
-  if (!secretKey) {
-    response.status(500).json({ error: "PAYSTACK_SECRET_KEY is not configured." });
-    return;
-  }
-
-  let paymentData: PaystackVerification["data"];
   try {
-    const paystackResponse = await axios.get<PaystackVerification>(
-      `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
-      { headers: { Authorization: `Bearer ${secretKey}` } },
-    );
-    paymentData = paystackResponse.data?.data;
-  } catch (error: unknown) {
-    const message = axios.isAxiosError(error)
-      ? error.response?.data?.message ?? error.message
-      : "Failed to verify Paystack payment.";
-    response.status(502).json({ error: message });
-    return;
-  }
-
-  if (
-    paymentData?.status !== "success"
-    || paymentData.reference !== reference
-    || paymentData.currency !== "NGN"
-    || paymentData.amount !== transaction.paymentAmountKobo
-    || paymentData.metadata?.transactionType !== "WALLET_TOPUP"
-    || paymentData.metadata?.walletTransactionId !== transaction.id
-    || paymentData.metadata?.userId !== user.id
-    || paymentData.metadata?.amountUsdCents !== transaction.amountCents
-  ) {
-    response.status(400).json({ error: "Payment could not be verified for this wallet deposit." });
-    return;
-  }
-
-  const wallet = await prisma.$transaction(async (database) => {
-    const updated = await database.walletTransaction.updateMany({
-      where: { id: transaction.id, status: "PENDING" },
-      data: { status: "COMPLETED" },
-    });
-    if (updated.count === 1) {
-      await database.wallet.update({
-        where: { id: transaction.walletId },
-        data: { balanceCents: { increment: transaction.amountCents } },
-      });
+    const balanceCents = await finalizeWalletTopUp(reference, user.id);
+    response.json({ verified: true, reference, balanceCents });
+  } catch (error) {
+    if (error instanceof WalletPaymentError) {
+      response.status(error.status).json({ error: error.message });
+      return;
     }
-    return database.wallet.findUniqueOrThrow({
-      where: { id: transaction.walletId },
-      select: { balanceCents: true },
-    });
-  });
-
-  response.json({
-    verified: true,
-    reference,
-    balanceCents: wallet.balanceCents,
-  });
+    throw error;
+  }
 });
 
 export default router;

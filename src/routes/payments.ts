@@ -4,6 +4,7 @@ import { Router } from "express";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
 import { usdToNgnKobo } from "../services/exchangeRates.js";
+import { getPaystackCallbackUrl, getPaystackSecretKey, verifyPaystackTransaction } from "../services/paystack.js";
 
 const router = Router();
 
@@ -90,9 +91,11 @@ router.post("/payments/initialize", async (request, response) => {
     return;
   }
 
-  const secretKey = process.env.PAYSTACK_SECRET_KEY;
-  if (!secretKey) {
-    response.status(500).json({ error: "PAYSTACK_SECRET_KEY is not configured." });
+  let secretKey: string;
+  try {
+    secretKey = getPaystackSecretKey();
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Paystack is not configured." });
     return;
   }
 
@@ -105,9 +108,11 @@ router.post("/payments/initialize", async (request, response) => {
         amount: amountCents,
         currency: "NGN",
         reference,
+        callback_url: getPaystackCallbackUrl("CART_CHECKOUT"),
         metadata: {
+          transactionType: "CART_CHECKOUT",
           userId: buyer.id,
-          cartSubtotalUsdCents: Math.round(subtotalUsd * 100),
+          subtotalUsdCents: Math.round(subtotalUsd * 100),
           paymentAmountKobo: amountCents,
           cartItemIds: eligibleItems.map((item) => item.id),
         },
@@ -117,11 +122,12 @@ router.post("/payments/initialize", async (request, response) => {
           Authorization: `Bearer ${secretKey}`,
           "Content-Type": "application/json",
         },
+        timeout: 15_000,
       },
     );
 
     const data = paystackResponse.data?.data;
-    if (!data?.authorization_url || !data?.reference) {
+    if (!data?.authorization_url || data.reference !== reference) {
       response.status(502).json({ error: "Payment gateway initialization failed." });
       return;
     }
@@ -136,7 +142,7 @@ router.post("/payments/initialize", async (request, response) => {
     });
   } catch (error: unknown) {
     const message = axios.isAxiosError(error) ? error.response?.data?.message ?? error.message : "Failed to initialize Paystack payment.";
-    response.status(500).json({ error: message });
+    response.status(502).json({ error: message });
   }
 });
 
@@ -147,12 +153,6 @@ router.get("/payments/verify/:reference", async (request, response) => {
       return;
     }
 
-  const secretKey = process.env.PAYSTACK_SECRET_KEY;
-  if (!secretKey) {
-    response.status(500).json({ error: "PAYSTACK_SECRET_KEY is not configured." });
-    return;
-  }
-
   const reference = request.params.reference;
   if (!reference) {
     response.status(400).json({ error: "reference is required." });
@@ -160,22 +160,13 @@ router.get("/payments/verify/:reference", async (request, response) => {
   }
 
   try {
-    const paystackResponse = await axios.get(
-      `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
-      {
-        headers: {
-          Authorization: `Bearer ${secretKey}`,
-        },
-      },
-    );
-
-    const data = paystackResponse.data?.data;
-    if (!data) {
-      response.status(400).json({ error: "Transaction could not be verified." });
-      return;
-    }
-
-    if (data.status !== "success" || data.reference !== reference || data.currency !== "NGN" || data.metadata?.userId !== buyer.id) {
+    const data = await verifyPaystackTransaction(reference);
+    if (data.status !== "success"
+      || data.reference !== reference
+      || data.currency !== "NGN"
+      || data.metadata?.transactionType !== "CART_CHECKOUT"
+      || data.metadata?.userId !== buyer.id
+      || data.amount !== Number(data.metadata?.paymentAmountKobo)) {
       response.status(400).json({ error: "Payment could not be verified for this account." });
       return;
     }
@@ -189,8 +180,8 @@ router.get("/payments/verify/:reference", async (request, response) => {
       metadata: data.metadata ?? {},
     });
   } catch (error: unknown) {
-    const message = axios.isAxiosError(error) ? error.response?.data?.message ?? error.message : "Failed to verify Paystack payment.";
-    response.status(500).json({ error: message });
+    const message = axios.isAxiosError(error) ? error.response?.data?.message ?? error.message : error instanceof Error ? error.message : "Failed to verify Paystack payment.";
+    response.status(502).json({ error: message });
   }
 });
 

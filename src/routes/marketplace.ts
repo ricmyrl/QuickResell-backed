@@ -394,6 +394,17 @@ router.delete("/watchlist/:listingId", async (request, response) => {
 
 router.post("/listings", async (request, response) => {
   const seller = currentUser(request);
+  const verification = await prisma.sellerVerification.findUnique({
+    where: { userId: seller.id },
+    select: { identityStatus: true, payoutStatus: true },
+  });
+  if (verification?.identityStatus !== "VERIFIED" || verification.payoutStatus !== "VERIFIED") {
+    response.status(403).json({
+      error: "Complete identity and payout-account verification before publishing as a seller.",
+      code: "SELLER_VERIFICATION_REQUIRED",
+    });
+    return;
+  }
   const { title, description, categoryId, price, originalPrice, locationCampus, latitude, longitude, imageUrls, quantityAvailable = 1, auctionDurationHours } = request.body ?? {};
 
   if (typeof title !== "string" || !title.trim() || title.trim().length > 120) {

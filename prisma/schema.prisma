@@ -76,6 +76,14 @@ enum WalletTransactionStatus {
   FAILED
 }
 
+enum SellerCheckStatus {
+  NOT_STARTED
+  PENDING
+  VERIFIED
+  REJECTED
+  REVIEW_REQUIRED
+}
+
 model User {
   id                    String         @id @db.Uuid
   email                 String?        @unique
@@ -110,6 +118,29 @@ model User {
   purchaseOrders        PurchaseOrder[]
   soldOrderItems         PurchaseOrderItem[]
   wallet                Wallet?
+  sellerVerification   SellerVerification?
+}
+
+model SellerVerification {
+  id                   String            @id @default(cuid())
+  userId               String            @unique @db.Uuid
+  identityStatus       SellerCheckStatus @default(NOT_STARTED)
+  payoutStatus         SellerCheckStatus @default(NOT_STARTED)
+  identityReference    String?           @unique
+  identityJobId        String?           @unique
+  smileUserId          String?
+  verifiedNameHash     String?
+  bankCode             String?
+  bankName             String?
+  bankAccountLast4     String?
+  failureCode          String?
+  identityVerifiedAt   DateTime?
+  payoutVerifiedAt     DateTime?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+  user                 User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([identityStatus, payoutStatus])
 }
 
 model Category {
