@@ -9,6 +9,25 @@ export type PaystackTransaction = {
   metadata?: Record<string, unknown>;
 };
 
+export type PaystackBank = { name: string; code: string };
+
+export function normalizePaystackBanks(
+  banks: Array<{ name?: unknown; code?: unknown; active?: unknown }>,
+): PaystackBank[] {
+  const normalized = banks
+    .filter((bank): bank is { name: string; code: string; active?: unknown } =>
+      typeof bank.name === "string" &&
+      typeof bank.code === "string" &&
+      (bank.active !== false || bank.code === "044"))
+    .map(({ name, code }) => ({ name, code }));
+
+  if (!normalized.some((bank) => bank.code === "044" || /^access bank\b/i.test(bank.name))) {
+    normalized.push({ name: "Access Bank", code: "044" });
+  }
+
+  return normalized.sort((left, right) => left.name.localeCompare(right.name));
+}
+
 export function convertUsdToPayoutKobo(usdAmount: number, ngnRate: number): number {
   if (!Number.isFinite(usdAmount) || usdAmount <= 0) return 0;
   if (!Number.isFinite(ngnRate) || ngnRate <= 0) throw new Error("A valid NGN exchange rate is required for payouts.");

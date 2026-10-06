@@ -4,7 +4,7 @@ import { Router, type Request } from "express";
 import type { User } from "../generated/prisma/client.js";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
-import { createPaystackTransferRecipient, normalizeNigerianIdentityNumber, validatePaystackIdentityAndBankAccount } from "../services/paystack.js";
+import { createPaystackTransferRecipient, normalizeNigerianIdentityNumber, normalizePaystackBanks, validatePaystackIdentityAndBankAccount } from "../services/paystack.js";
 import { getPaystackSecretKey } from "../services/paystack.js";
 import {
   getSellerVerificationProvider,
@@ -169,11 +169,7 @@ router.get("/seller/verification/banks", async (_request, response) => {
       "https://api.paystack.co/bank",
       { headers: { Authorization: `Bearer ${secretKey}` }, params: { country: "nigeria", use_cursor: true, perPage: 100 }, timeout: 15_000 },
     );
-    cachedBanks = (result.data.data ?? [])
-      .filter((bank): bank is { name: string; code: string; active?: unknown } =>
-        typeof bank.name === "string" && typeof bank.code === "string" && bank.active !== false)
-      .map(({ name, code }) => ({ name, code }))
-      .sort((left, right) => left.name.localeCompare(right.name));
+    cachedBanks = normalizePaystackBanks(result.data.data ?? []);
     banksLoadedAt = Date.now();
     response.json({ banks: cachedBanks });
   } catch (error) {
