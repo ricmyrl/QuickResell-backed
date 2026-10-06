@@ -141,7 +141,7 @@ router.use("/seller/verification", requireSupabaseUser, requireConfirmedEmail);
 router.get("/seller/verification", async (request, response) => {
   const user = currentUser(request);
   const verification = await prisma.sellerVerification.findUnique({ where: { userId: user.id } });
-  response.json({ verification: verification ? {
+  response.json({ provider: getSellerVerificationProvider(), verification: verification ? {
     identityStatus: verification.identityStatus,
     payoutStatus: verification.payoutStatus,
     identityVerifiedAt: verification.identityVerifiedAt,
@@ -192,8 +192,8 @@ router.post("/seller/verification/identity/start", async (request, response) => 
   const provider = getSellerVerificationProvider();
   if (provider === "manual_review") {
     const existing = await prisma.sellerVerification.findUnique({ where: { userId: user.id } });
-    if (existing?.identityStatus === "VERIFIED") {
-      response.status(409).json({ error: "Your identity is already verified." });
+    if (existing?.identityStatus === "VERIFIED" && existing.payoutStatus === "VERIFIED") {
+      response.status(409).json({ error: "Your identity and payout account are already verified." });
       return;
     }
     response.json({
