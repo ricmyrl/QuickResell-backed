@@ -6,6 +6,7 @@ import { prisma } from "../lib/prisma.js";
 import { createNotificationsForUsers } from "../lib/notifications.js";
 import { createMarketplaceScorer, type MarketplaceFeedType } from "../../servies/marketRecomendationService.js";
 import { emptyListingReactionCounts, getListingReactionCounts } from "../services/listingReactions.js";
+import { maxAllowedBid } from "../services/bidLogic.js";
 
 const router = Router();
 const feedTypes: MarketplaceFeedType[] = ["FOR_YOU", "DEALS", "NEARBY", "EXPLORE"];
@@ -414,6 +415,10 @@ router.post("/listings", async (request, response) => {
   if (auctionDurationHours !== undefined &&
       (typeof auctionDurationHours !== "number" || !Number.isInteger(auctionDurationHours) || auctionDurationHours < 1 || auctionDurationHours > maxAuctionDurationHours)) {
     response.status(400).json({ error: `auctionDurationHours must be an integer between 1 and ${maxAuctionDurationHours}.` });
+    return;
+  }
+  if (auctionDurationHours !== undefined && price >= maxAllowedBid) {
+    response.status(400).json({ error: `Auction starting price must be below the maximum bid of ${maxAllowedBid}.` });
     return;
   }
   if (originalPrice !== undefined && originalPrice !== null &&

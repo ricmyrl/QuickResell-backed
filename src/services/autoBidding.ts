@@ -1,6 +1,8 @@
 import type { AuctionRoom, Bid, Prisma } from "../generated/prisma/client.js";
+import { createNotificationsForUsers } from "../lib/notifications.js";
 import { prisma } from "../lib/prisma.js";
 import { sendScoutWatchlistEmail } from "./mail.js";
+import { selectProxyBid } from "./bidLogic.js";
 
 const antiSnipeWindowMs = 10_000;
 const antiSnipeExtensionMs = 30_000;
@@ -9,22 +11,6 @@ export type AutoBidResult = {
   auctionRoom: AuctionRoom | null;
   bid: Bid | null;
 };
-
-export function calculateProxyBid(
-  currentHighestBid: number,
-  maxBid: number,
-  bidStep: number,
-  competingMaxBid = currentHighestBid,
-): number | null {
-  if (![currentHighestBid, maxBid, bidStep, competingMaxBid].every(Number.isFinite) ||
-      currentHighestBid < 0 || bidStep <= 0 || maxBid <= currentHighestBid || competingMaxBid > maxBid) {
-    return null;
-  }
-
-  const nextAmount = Math.max(currentHighestBid + bidStep, competingMaxBid + bidStep);
-  const cappedAmount = Math.min(maxBid, nextAmount);
-  return cappedAmount > currentHighestBid ? cappedAmount : null;
-}
 
 async function lockAuctionRoom(
   transaction: Prisma.TransactionClient,
@@ -37,7 +23,7 @@ async function lockAuctionRoom(
 }
 
 export async function processAuctionAutoBid(auctionRoomId: string): Promise<AutoBidResult> {
-  return prisma.$transaction(async (transaction) => {
+  const result = await prisma.$transaction(async (transaction) => {
     const room = await lockAuctionRoom(transaction, auctionRoomId);
     if (!room) return { auctionRoom: null, bid: null };
     if (room.status !== "ACTIVE" || room.endsAt <= new Date()) {
@@ -56,27 +42,17 @@ export async function processAuctionAutoBid(auctionRoomId: string): Promise<Auto
         maxBid: { gt: room.currentHighestBid },
         userId: { not: room.sellerId },
       },
-      orderBy: [{ maxBid: "desc" }, { createdAt: "asc" }, { id: "asc" }],
     });
-    if (rules.length === 0) return { auctionRoom: room, bid: null };
-
-    const highestRule = rules[0];
-    const competingRule = rules.find((rule) => rule.userId !== highestRule.userId);
-    const nextBidder = highestRule;
-
-    if (highestRule.userId === room.highestBidderId && !competingRule) {
-      return { auctionRoom: room, bid: null };
-    }
-
-    const proposedAmount = calculateProxyBid(
+    const decision = selectProxyBid(
       room.currentHighestBid,
-      nextBidder.maxBid,
-      nextBidder.bidStep,
-      competingRule?.maxBid ?? room.currentHighestBid,
+      room.highestBidderId,
+      room.sellerId,
+      rules,
     );
-    if (proposedAmount === null) {
-      return { auctionRoom: room, bid: null };
-    }
+    if (!decision) return { auctionRoom: room, bid: null };
+    const nextBidder = rules.find((rule) => rule.userId === decision.bidderId);
+    if (!nextBidder) return { auctionRoom: room, bid: null };
+    const proposedAmount = decision.amount;
 
     const now = new Date();
     const endsAt = room.endsAt.getTime() - now.getTime() <= antiSnipeWindowMs
@@ -108,17 +84,6 @@ export async function processAuctionAutoBid(auctionRoomId: string): Promise<Auto
       where: { id: nextBidder.userId },
       select: { email: true },
     });
-
-    if (bidder?.email) {
-      await sendScoutWatchlistEmail({
-        recipientEmail: bidder.email,
-        itemTitle: title,
-        maxBid: nextBidder.maxBid,
-        bidStep: nextBidder.bidStep,
-        note: `Scout just placed a bid of $${proposedAmount.toFixed(2)} on your watched item. Your watchlist rule remains active until your maximum is reached.`,
-      });
-    }
-
     const notifications = [
       ...(room.highestBidderId && room.highestBidderId !== nextBidder.userId
         ? [{
@@ -149,12 +114,47 @@ export async function processAuctionAutoBid(auctionRoomId: string): Promise<Auto
         }]
         : []),
     ];
-    await transaction.notification.createMany({ data: notifications });
     await transaction.auctionWatchlistItem.updateMany({
       where: { auctionRoomId, autoBidEnabled: true, maxBid: { lte: proposedAmount } },
       data: { autoBidEnabled: false },
     });
 
-    return { auctionRoom, bid };
+    return {
+      auctionRoom,
+      bid,
+      sideEffects: {
+        bidderEmail: bidder?.email ?? null,
+        itemTitle: title,
+        maxBid: nextBidder.maxBid,
+        bidStep: nextBidder.bidStep,
+        proposedAmount,
+        notifications,
+      },
+    };
   });
+
+  if (result.sideEffects) {
+    const { bidderEmail, itemTitle, maxBid, bidStep, proposedAmount, notifications } = result.sideEffects;
+    const sideEffects: Promise<unknown>[] = [createNotificationsForUsers(notifications)];
+    if (bidderEmail) {
+      sideEffects.push(sendScoutWatchlistEmail({
+        recipientEmail: bidderEmail,
+        itemTitle,
+        maxBid,
+        bidStep,
+        note: `Scout just placed a bid of $${proposedAmount.toFixed(2)} on your watched item. Your watchlist rule remains active until your maximum is reached.`,
+      }));
+    }
+    const settled = await Promise.allSettled(sideEffects);
+    settled.forEach((effect) => {
+      if (effect.status === "rejected") {
+        console.error("Automatic bid was recorded, but a notification could not be delivered.", {
+          auctionRoomId,
+          error: effect.reason,
+        });
+      }
+    });
+  }
+
+  return { auctionRoom: result.auctionRoom, bid: result.bid };
 }

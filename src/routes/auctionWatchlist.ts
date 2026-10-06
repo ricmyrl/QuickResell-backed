@@ -3,10 +3,10 @@ import type { AuctionWatchlistItem, User } from "../generated/prisma/client.js";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
 import { processAuctionAutoBid } from "../services/autoBidding.js";
+import { maxAllowedBid } from "../services/bidLogic.js";
 import { sendScoutWatchlistEmail } from "../services/mail.js";
 
 const router = Router();
-const maxAllowedBid = 10_000_000;
 
 function currentUser(request: Request): User {
   const user = (request as AuthenticatedRequest).marketplaceUser;

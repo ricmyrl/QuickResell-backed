@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma.js";
 import { notifyAuctionResolution, notifyBidActivity } from "../lib/notifications.js";
 import { sendAuctionWonEmail } from "../services/mail.js";
 import { processAuctionAutoBid } from "../services/autoBidding.js";
+import { isValidManualBidAmount } from "../services/bidLogic.js";
 import { emptyListingReactionCounts, getListingReactionCounts } from "../services/listingReactions.js";
 
 const router = Router();
@@ -14,7 +15,7 @@ const antiSnipeExtensionMs = 30_000;
 export type AuctionVerdict = "ACCEPT" | "REJECT";
 type AuctionVerdictRequest = { decision: AuctionVerdict };
 type RouteError = { error: string; status: 400 | 403 | 404 | 409 };
-type BidPlacementResult = RouteError | { bid: Bid; auctionRoom: AuctionRoom };
+type BidPlacementResult = RouteError | { bid: Bid; auctionRoom: AuctionRoom; previousBidderId: string | null; auctionTitle: string };
 type CloseAuctionResult = RouteError | { auctionRoom: AuctionRoom; alreadyFinalized: boolean };
 type VerdictResult = RouteError | { auctionRoom: AuctionRoom; trustScore: number };
 let finalizationInProgress = false;
@@ -306,8 +307,8 @@ router.use("/auctions/:auctionRoomId/bids", requireSupabaseUser, requireConfirme
 router.post("/auctions/:auctionRoomId/bids", async (request, response) => {
   const bidder = currentUser(request);
   const amount = request.body?.amount;
-  if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) {
-    response.status(400).json({ error: "amount must be a finite, non-negative number." });
+  if (!isValidManualBidAmount(amount)) {
+    response.status(400).json({ error: "amount must be a finite number greater than zero and within the allowed bid limit." });
     return;
   }
 
@@ -327,7 +328,7 @@ router.post("/auctions/:auctionRoomId/bids", async (request, response) => {
     }
     const listing = await transaction.post.findUnique({
       where: { id: room.postId },
-      select: { price: true },
+      select: { price: true, title: true },
     });
     if (!listing) return { error: "Auction listing not found.", status: 404 as const };
     const minimumBid = Math.max(room.currentHighestBid, listing.price);
@@ -359,33 +360,67 @@ router.post("/auctions/:auctionRoomId/bids", async (request, response) => {
       update: { auctionRoomId: room.id, quantity: 1 },
     });
 
-    const itemTitle = await transaction.post.findUnique({
-      where: { id: room.postId },
-      select: { title: true },
-    });
-
-    if (itemTitle) {
-      await notifyBidActivity({
-        auctionRoomId: room.id,
-        auctionTitle: itemTitle.title,
-        sellerId: room.sellerId,
-        previousBidderId: room.highestBidderId,
-        bidderId: bidder.id,
-        amount,
-      });
-    }
-
-    return { bid, auctionRoom };
+    return { bid, auctionRoom, previousBidderId: room.highestBidderId, auctionTitle: listing.title };
   });
 
   if ("error" in result) {
     response.status(result.status).json({ error: result.error });
     return;
   }
-  const automaticBid = await processAuctionAutoBid(result.auctionRoom.id);
+  try {
+    await notifyBidActivity({
+      auctionRoomId: result.auctionRoom.id,
+      auctionTitle: result.auctionTitle,
+      sellerId: result.auctionRoom.sellerId,
+      previousBidderId: result.previousBidderId,
+      bidderId: bidder.id,
+      amount,
+    });
+  } catch (error) {
+    console.error("Bid was recorded, but bid notifications could not be created.", {
+      auctionRoomId: result.auctionRoom.id,
+      bidId: result.bid.id,
+      error,
+    });
+  }
+
+  let automaticBid: Awaited<ReturnType<typeof processAuctionAutoBid>> = { auctionRoom: null, bid: null };
+  try {
+    automaticBid = await processAuctionAutoBid(result.auctionRoom.id);
+  } catch (error) {
+    console.error("Bid was recorded, but automatic bidding could not be processed.", {
+      auctionRoomId: result.auctionRoom.id,
+      bidId: result.bid.id,
+      error,
+    });
+  }
+  const auctionRoom = await prisma.auctionRoom.findUnique({
+    where: { id: result.auctionRoom.id },
+    include: {
+      post: {
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          price: true,
+          locationCampus: true,
+          category: { select: { name: true } },
+          images: { take: 1, orderBy: { sortOrder: "asc" } },
+        },
+      },
+      seller: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true, completedAuctions: true } },
+      highestBidder: { select: { id: true, displayName: true, avatarUrl: true } },
+      bids: {
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: 50,
+        include: { bidder: { select: { id: true, displayName: true, avatarUrl: true } } },
+      },
+    },
+  });
+  if (!auctionRoom) throw new Error("Auction room disappeared after a bid was recorded.");
   response.status(201).json({
-    ...result,
-    auctionRoom: automaticBid.auctionRoom ?? result.auctionRoom,
+    bid: result.bid,
+    auctionRoom,
     automaticBid: automaticBid.bid,
   });
 });
