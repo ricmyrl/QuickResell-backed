@@ -190,14 +190,14 @@ router.post("/seller/verification/identity/start", async (request, response) => 
   }
 
   const provider = getSellerVerificationProvider();
-  if (provider === "manual_review") {
+  if (provider === "paystack") {
     const existing = await prisma.sellerVerification.findUnique({ where: { userId: user.id } });
     if (existing?.identityStatus === "VERIFIED" && existing.payoutStatus === "VERIFIED") {
       response.status(409).json({ error: "Your identity and payout account are already verified." });
       return;
     }
     response.json({
-      provider: "manual_review",
+      provider: "paystack",
       reference: randomUUID(),
       requiresManualReview: false,
       autoApproved: false,
@@ -261,7 +261,7 @@ router.post("/seller/verification/identity/start", async (request, response) => 
 
 router.post("/seller/verification/identity/manual-review", async (request, response) => {
   const user = currentUser(request);
-  if (getSellerVerificationProvider() !== "manual_review") {
+  if (getSellerVerificationProvider() !== "paystack") {
     response.status(409).json({ error: "Paystack identity verification is not the active verification provider." });
     return;
   }
@@ -394,7 +394,7 @@ router.post("/seller/verification/identity/manual-review", async (request, respo
 
     response.json({
       status: "VERIFIED",
-      provider: "manual_review",
+      provider: "paystack",
       requiresManualReview: false,
       autoApproved: true,
       payoutStatus: "VERIFIED",

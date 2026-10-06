@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import axios from "axios";
 
 export type SmileEnvironment = "sandbox" | "production";
-export type SellerVerificationProvider = "smile" | "manual_review";
+export type SellerVerificationProvider = "paystack" | "smile";
 
 export type SmileConfiguration = {
   partnerId: string;
@@ -17,19 +17,10 @@ export type SmileConfiguration = {
 
 export function getSellerVerificationProvider(environment: NodeJS.ProcessEnv = process.env): SellerVerificationProvider {
   const requested = environment.SELLER_VERIFICATION_PROVIDER?.trim().toLowerCase();
-  if (requested === "manual" || requested === "manual_review") return "manual_review";
+  if (requested === "manual" || requested === "manual_review" || requested === "paystack") return "paystack";
   if (requested === "smile" || requested === "smile_id") return "smile";
 
-  const hasSmileConfig = Boolean(
-    environment.SMILE_ID_PARTNER_ID?.trim() &&
-    environment.SMILE_ID_API_KEY?.trim() &&
-    environment.SMILE_ID_PARTNER_NAME?.trim() &&
-    environment.SMILE_ID_LOGO_URL?.trim() &&
-    environment.SMILE_ID_PRIVACY_POLICY_URL?.trim() &&
-    (environment.SMILE_ID_ENVIRONMENT === "sandbox" || environment.SMILE_ID_ENVIRONMENT === "production"),
-  );
-
-  return hasSmileConfig ? "smile" : "manual_review";
+  return "paystack";
 }
 
 export function getSmileConfiguration(environment: NodeJS.ProcessEnv = process.env): SmileConfiguration {
