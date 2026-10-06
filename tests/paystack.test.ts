@@ -48,3 +48,19 @@ test("Paystack bank list always includes Access Bank (044)", () => {
     [{ name: "Access Bank", code: "044" }],
   );
 });
+
+test("Paystack bank list includes commercial banks and excludes microfinance banks", () => {
+  assert.deepEqual(
+    normalizePaystackBanks([
+      { name: "Advancly MFB", code: "090759", active: true },
+      { name: "Alert MFB", code: "090297", active: true },
+      { name: "Alpha Morgan Bank", code: "090", active: true },
+      { name: "Access Bank", code: "044", active: true },
+      { name: "Guaranty Trust Bank", code: "058", active: true },
+    ]),
+    [
+      { name: "Access Bank", code: "044" },
+      { name: "Guaranty Trust Bank", code: "058" },
+    ],
+  );
+});
