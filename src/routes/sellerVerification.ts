@@ -308,6 +308,7 @@ router.post("/seller/verification/identity/manual-review", async (request, respo
       legalName: legalName.trim(),
       idType,
       idNumber,
+      bankCode,
       accountNumber,
     });
   } catch (error) {

@@ -143,12 +143,14 @@ export async function validatePaystackIdentityAndBankAccount({
   legalName,
   idType,
   idNumber,
+  bankCode,
   accountNumber,
   environment = process.env,
 }: {
   legalName: string
   idType: "NIN" | "BVN"
   idNumber: string
+  bankCode: string
   accountNumber: string
   environment?: NodeJS.ProcessEnv
 }): Promise<void> {
@@ -158,6 +160,7 @@ export async function validatePaystackIdentityAndBankAccount({
     "https://api.paystack.co/bank/validate",
     {
       account_number: accountNumber,
+      bank_code: bankCode,
       account_name: legalName,
       account_type: "personal",
       document_type: "identityNumber",
