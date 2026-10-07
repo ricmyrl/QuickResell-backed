@@ -65,6 +65,7 @@ test("Paystack identity validation includes the selected bank code", async () =>
       environment: { PAYSTACK_SECRET_KEY: "sk_test_example" },
     });
     assert.equal(requestBody?.bank_code, "044");
+    assert.equal(requestBody?.country_code, "NG");
     assert.equal(requestBody?.document_number, "12345678901");
   } finally {
     axios.defaults.adapter = originalAdapter;

@@ -161,6 +161,7 @@ export async function validatePaystackIdentityAndBankAccount({
     {
       account_number: accountNumber,
       bank_code: bankCode,
+      country_code: "NG",
       account_name: legalName,
       account_type: "personal",
       document_type: "identityNumber",
