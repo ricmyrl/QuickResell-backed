@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getSellerVerificationProvider } from "../src/services/sellerVerification.js";
+import { canPublishListings, getSellerVerificationProvider } from "../src/services/sellerVerification.js";
 
 test("Paystack is selected by default even when Smile ID is configured", () => {
   const provider = getSellerVerificationProvider({
@@ -30,4 +30,31 @@ test("Smile provider is selected only when explicitly requested", () => {
   } as NodeJS.ProcessEnv);
 
   assert.equal(provider, "smile");
+});
+
+test("sellers with verified payout and Paystack manual identity review can publish listings", () => {
+  assert.equal(canPublishListings({
+    identityStatus: "REVIEW_REQUIRED",
+    payoutStatus: "VERIFIED",
+    failureCode: "IDENTITY_MANUAL_REVIEW",
+  }), true);
+});
+
+test("listing publication still requires verified payout and approved identity or the manual-review state", () => {
+  assert.equal(canPublishListings(null), false);
+  assert.equal(canPublishListings({
+    identityStatus: "VERIFIED",
+    payoutStatus: "NOT_STARTED",
+    failureCode: null,
+  }), false);
+  assert.equal(canPublishListings({
+    identityStatus: "REVIEW_REQUIRED",
+    payoutStatus: "VERIFIED",
+    failureCode: "OTHER_REVIEW_REASON",
+  }), false);
+  assert.equal(canPublishListings({
+    identityStatus: "REJECTED",
+    payoutStatus: "VERIFIED",
+    failureCode: "IDENTITY_MANUAL_REVIEW",
+  }), false);
 });

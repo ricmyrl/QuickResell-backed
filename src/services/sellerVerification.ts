@@ -4,6 +4,17 @@ import axios from "axios";
 export type SmileEnvironment = "sandbox" | "production";
 export type SellerVerificationProvider = "paystack" | "smile";
 
+export function canPublishListings(verification: {
+  identityStatus: string;
+  payoutStatus: string;
+  failureCode: string | null;
+} | null): boolean {
+  if (!verification || verification.payoutStatus !== "VERIFIED") return false;
+  return verification.identityStatus === "VERIFIED" ||
+    (verification.identityStatus === "REVIEW_REQUIRED" &&
+      verification.failureCode === "IDENTITY_MANUAL_REVIEW");
+}
+
 export type SmileConfiguration = {
   partnerId: string;
   apiKey: string;

@@ -7,6 +7,7 @@ import { createNotificationsForUsers } from "../lib/notifications.js";
 import { createMarketplaceScorer, type MarketplaceFeedType } from "../../servies/marketRecomendationService.js";
 import { emptyListingReactionCounts, getListingReactionCounts } from "../services/listingReactions.js";
 import { maxAllowedBid } from "../services/bidLogic.js";
+import { canPublishListings } from "../services/sellerVerification.js";
 
 const router = Router();
 const feedTypes: MarketplaceFeedType[] = ["FOR_YOU", "DEALS", "NEARBY", "EXPLORE"];
@@ -396,9 +397,9 @@ router.post("/listings", async (request, response) => {
   const seller = currentUser(request);
   const verification = await prisma.sellerVerification.findUnique({
     where: { userId: seller.id },
-    select: { identityStatus: true, payoutStatus: true },
+    select: { identityStatus: true, payoutStatus: true, failureCode: true },
   });
-  if (verification?.identityStatus !== "VERIFIED" || verification.payoutStatus !== "VERIFIED") {
+  if (!canPublishListings(verification)) {
     response.status(403).json({
       error: "Complete identity and payout-account verification before publishing as a seller.",
       code: "SELLER_VERIFICATION_REQUIRED",

@@ -4,7 +4,7 @@ import { Router, type Request } from "express";
 import type { User } from "../generated/prisma/client.js";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
-import { createPaystackTransferRecipient, getPaystackProviderErrorMessage, normalizeNigerianIdentityNumber, normalizePaystackBanks, validatePaystackIdentityAndBankAccount } from "../services/paystack.js";
+import { createPaystackTransferRecipient, getPaystackProviderErrorMessage, normalizeNigerianIdentityNumber, normalizePaystackBanks } from "../services/paystack.js";
 import { getPaystackSecretKey } from "../services/paystack.js";
 import {
   getSellerVerificationProvider,
@@ -360,55 +360,20 @@ router.post("/seller/verification/identity/manual-review", async (request, respo
   }
 
   try {
-    await validatePaystackIdentityAndBankAccount({
-      legalName: accountName,
-      idType,
-      idNumber,
-      bankCode,
-      accountNumber,
-    });
-  } catch (error) {
-    const providerStatus = axios.isAxiosError(error) ? error.response?.status : undefined;
-    const providerMessage = getPaystackProviderErrorMessage(error);
-    const status = providerStatus === 401 || providerStatus === 403
-      ? 503
-      : providerStatus && providerStatus < 500
-        ? 422
-        : error instanceof Error && /PAYSTACK_SECRET_KEY/.test(error.message)
-          ? 503
-          : 502;
-    console.error("Paystack identity check failed.", {
-      stage: "IDENTITY_ACCOUNT_MATCH",
-      status: providerStatus,
-      code: axios.isAxiosError(error) ? error.code : undefined,
-      providerMessage,
-    });
-    response.status(status).json({
-      error: status === 422
-        ? `The bank account and account-holder name were verified, but Paystack rejected the identity validation request${providerStatus ? ` (HTTP ${providerStatus})` : ""}. This does not confirm that the ${idType} is invalid.${providerMessage ? ` Paystack response: ${providerMessage}` : ""}`
-        : status === 503
-          ? "Paystack credentials are not authorized to verify identity."
-          : "The bank account is valid, but Paystack could not check the identity right now. Please retry.",
-      code: status === 422 ? "IDENTITY_VALIDATION_REJECTED" : "IDENTITY_CHECK_UNAVAILABLE",
-    });
-    return;
-  }
-
-  try {
     const bank = cachedBanks.find((item) => item.code === bankCode);
     const recipient = await createPaystackTransferRecipient({ name: accountName, accountNumber, bankCode });
     const now = new Date();
     const reference = randomUUID();
-    const verifiedNameHash = hashVerifiedName(legalName, hashSecret);
+    const identityStatus = "REVIEW_REQUIRED";
     await prisma.sellerVerification.upsert({
       where: { userId: user.id },
       create: {
         userId: user.id,
-        identityStatus: "VERIFIED",
+        identityStatus,
         payoutStatus: "VERIFIED",
         identityReference: reference,
-        verifiedNameHash,
-        identityVerifiedAt: now,
+        verifiedNameHash: null,
+        failureCode: "IDENTITY_MANUAL_REVIEW",
         bankCode,
         bankName: bank?.name ?? "Verified Nigerian bank",
         bankAccountNumber: accountNumber,
@@ -418,13 +383,13 @@ router.post("/seller/verification/identity/manual-review", async (request, respo
         payoutVerifiedAt: now,
       },
       update: {
-        identityStatus: "VERIFIED",
+        identityStatus,
         payoutStatus: "VERIFIED",
         identityReference: reference,
         identityJobId: null,
         smileUserId: null,
-        verifiedNameHash,
-        identityVerifiedAt: now,
+        verifiedNameHash: null,
+        identityVerifiedAt: null,
         bankCode,
         bankName: bank?.name ?? "Verified Nigerian bank",
         bankAccountNumber: accountNumber,
@@ -432,18 +397,19 @@ router.post("/seller/verification/identity/manual-review", async (request, respo
         bankAccountLast4: accountNumber.slice(-4),
         paystackRecipientCode: recipient.recipient_code ?? null,
         payoutVerifiedAt: now,
-        failureCode: null,
+        failureCode: "IDENTITY_MANUAL_REVIEW",
       },
     });
 
     response.json({
-      status: "VERIFIED",
+      status: identityStatus,
       provider: "paystack",
-      requiresManualReview: false,
-      autoApproved: true,
+      requiresManualReview: true,
+      autoApproved: false,
       payoutStatus: "VERIFIED",
       bankName: bank?.name ?? "Verified Nigerian bank",
       accountLast4: accountNumber.slice(-4),
+      message: "The bank account and account-holder name were verified. Identity verification requires manual review because Paystack does not support identity validation in Nigeria.",
     });
   } catch (error) {
     console.error("Paystack payout account setup failed.", {

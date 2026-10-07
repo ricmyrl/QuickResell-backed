@@ -150,48 +150,6 @@ export function normalizeNigerianIdentityNumber(
   return normalized;
 }
 
-export async function validatePaystackIdentityAndBankAccount({
-  legalName,
-  idType,
-  idNumber,
-  bankCode,
-  accountNumber,
-  environment = process.env,
-}: {
-  legalName: string
-  idType: "NIN" | "BVN"
-  idNumber: string
-  bankCode: string
-  accountNumber: string
-  environment?: NodeJS.ProcessEnv
-}): Promise<void> {
-  const secretKey = getPaystackSecretKey(environment);
-  const normalized = normalizeNigerianIdentityNumber(idType, idNumber);
-  const response = await axios.post<{ status?: boolean; message?: string }>(
-    "https://api.paystack.co/bank/validate",
-    {
-      account_number: accountNumber,
-      bank_code: bankCode,
-      country_code: "NG",
-      account_name: legalName,
-      account_type: "personal",
-      document_type: "identityNumber",
-      document_number: normalized,
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${secretKey}`,
-        "Content-Type": "application/json",
-      },
-      timeout: 15_000,
-    },
-  );
-
-  if (response.data?.status !== true) {
-    throw new Error(response.data?.message ?? `Paystack could not validate this ${idType} and bank account.`);
-  }
-}
-
 export function getPaystackCallbackUrl(
   transactionType: "CART_CHECKOUT" | "WALLET_TOPUP",
   environment: NodeJS.ProcessEnv = process.env,

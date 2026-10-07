@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import axios from "axios";
 import { createHmac } from "node:crypto";
 import test from "node:test";
-import { getPaystackCallbackUrl, getPaystackProviderErrorMessage, getPaystackSecretKey, normalizeNigerianIdentityNumber, normalizePaystackBanks, validatePaystackIdentityAndBankAccount, verifyPaystackWebhookSignature } from "../src/services/paystack.js";
+import { getPaystackCallbackUrl, getPaystackProviderErrorMessage, getPaystackSecretKey, normalizeNigerianIdentityNumber, normalizePaystackBanks, verifyPaystackWebhookSignature } from "../src/services/paystack.js";
 
 test("production requires a live Paystack secret key", () => {
   assert.equal(getPaystackSecretKey({ NODE_ENV: "development", PAYSTACK_SECRET_KEY: "sk_test_example" }), "sk_test_example");
@@ -40,37 +39,6 @@ test("NIN and BVN values are normalized and must contain 11 digits", () => {
   assert.equal(normalizeNigerianIdentityNumber("BVN", "12345678901"), "12345678901");
   assert.throws(() => normalizeNigerianIdentityNumber("NIN", "1234567890"), /11-digit NIN/);
   assert.throws(() => normalizeNigerianIdentityNumber("BVN", "1234567890A"), /11-digit BVN/);
-});
-
-test("Paystack identity validation includes the selected bank code", async () => {
-  const originalAdapter = axios.defaults.adapter;
-  let requestBody: Record<string, unknown> | undefined;
-  axios.defaults.adapter = async (config) => {
-    requestBody = JSON.parse(String(config.data)) as Record<string, unknown>;
-    return {
-      data: { status: true },
-      status: 200,
-      statusText: "OK",
-      headers: {},
-      config,
-    };
-  };
-  try {
-    await validatePaystackIdentityAndBankAccount({
-      legalName: "Test User",
-      idType: "BVN",
-      idNumber: "12345678901",
-      bankCode: "044",
-      accountNumber: "0123456789",
-      environment: { PAYSTACK_SECRET_KEY: "sk_test_example" },
-    });
-    assert.equal(requestBody?.bank_code, "044");
-    assert.equal(requestBody?.country_code, "NG");
-    assert.equal(requestBody?.account_name, "Test User");
-    assert.equal(requestBody?.document_number, "12345678901");
-  } finally {
-    axios.defaults.adapter = originalAdapter;
-  }
 });
 
 test("Paystack provider errors are retained without exposing identity numbers", () => {
