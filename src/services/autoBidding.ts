@@ -24,17 +24,20 @@ async function lockAuctionRoom(
 
 export async function processAuctionAutoBid(auctionRoomId: string): Promise<AutoBidResult> {
   const result = await prisma.$transaction(async (transaction) => {
+    // 1. Lock the room row for the duration of the evaluation
     const room = await lockAuctionRoom(transaction, auctionRoomId);
     if (!room) return { auctionRoom: null, bid: null };
     if (room.status !== "ACTIVE" || room.endsAt <= new Date()) {
       return { auctionRoom: room, bid: null };
     }
 
+    // 2. Disable rules that have already been outbid
     await transaction.auctionWatchlistItem.updateMany({
       where: { auctionRoomId, autoBidEnabled: true, maxBid: { lte: room.currentHighestBid } },
       data: { autoBidEnabled: false },
     });
 
+    // 3. Fetch valid auto-bid rules
     const rules = await transaction.auctionWatchlistItem.findMany({
       where: {
         auctionRoomId,
@@ -43,6 +46,7 @@ export async function processAuctionAutoBid(auctionRoomId: string): Promise<Auto
         userId: { not: room.sellerId },
       },
     });
+
     const decision = selectProxyBid(
       room.currentHighestBid,
       room.highestBidderId,
@@ -50,17 +54,24 @@ export async function processAuctionAutoBid(auctionRoomId: string): Promise<Auto
       rules,
     );
     if (!decision) return { auctionRoom: room, bid: null };
+
     const nextBidder = rules.find((rule) => rule.userId === decision.bidderId);
     if (!nextBidder) return { auctionRoom: room, bid: null };
-    const proposedAmount = decision.amount;
 
+    const proposedAmount = decision.amount;
+    const previousHighestBidderId = room.highestBidderId;
+
+    // 4. Calculate anti-sniping extension
     const now = new Date();
     const endsAt = room.endsAt.getTime() - now.getTime() <= antiSnipeWindowMs
       ? new Date(room.endsAt.getTime() + antiSnipeExtensionMs)
       : room.endsAt;
+
+    // 5. Create new bid record and update auction state
     const bid = await transaction.bid.create({
       data: { auctionRoomId, bidderId: nextBidder.userId, amount: proposedAmount },
     });
+
     const auctionRoom = await transaction.auctionRoom.update({
       where: { id: auctionRoomId },
       data: {
@@ -69,11 +80,24 @@ export async function processAuctionAutoBid(auctionRoomId: string): Promise<Auto
         endsAt,
       },
     });
+
+    // 6. Manage Cart Items: Add to winner's cart & remove from outbid user's cart
     await transaction.cartItem.upsert({
       where: { userId_postId: { userId: nextBidder.userId, postId: room.postId } },
       create: { userId: nextBidder.userId, postId: room.postId, auctionRoomId },
       update: { auctionRoomId, quantity: 1 },
     });
+
+    if (previousHighestBidderId && previousHighestBidderId !== nextBidder.userId) {
+      await transaction.cartItem.deleteMany({
+        where: {
+          userId: previousHighestBidderId,
+          auctionRoomId,
+        },
+      });
+    }
+
+    // 7. Prepare details for async side-effects
     const auctionTitle = await transaction.post.findUnique({
       where: { id: room.postId },
       select: { title: true },
@@ -84,10 +108,11 @@ export async function processAuctionAutoBid(auctionRoomId: string): Promise<Auto
       where: { id: nextBidder.userId },
       select: { email: true },
     });
+
     const notifications = [
-      ...(room.highestBidderId && room.highestBidderId !== nextBidder.userId
+      ...(previousHighestBidderId && previousHighestBidderId !== nextBidder.userId
         ? [{
-          userId: room.highestBidderId,
+          userId: previousHighestBidderId,
           type: "OUTBID" as const,
           title: "Scout raised the bid",
           message: `A watchlist bidder raised “${title}” to $${proposedAmount.toFixed(2)}. If bidding is still active, reopen the auction and place a higher bid to get back in the lead.`,
@@ -114,6 +139,8 @@ export async function processAuctionAutoBid(auctionRoomId: string): Promise<Auto
         }]
         : []),
     ];
+
+    // 8. Disable rules that have reached their max bid with this placement
     await transaction.auctionWatchlistItem.updateMany({
       where: { auctionRoomId, autoBidEnabled: true, maxBid: { lte: proposedAmount } },
       data: { autoBidEnabled: false },
@@ -133,9 +160,11 @@ export async function processAuctionAutoBid(auctionRoomId: string): Promise<Auto
     };
   });
 
+  // 9. Execute non-blocking side effects outside the DB transaction
   if (result.sideEffects) {
     const { bidderEmail, itemTitle, maxBid, bidStep, proposedAmount, notifications } = result.sideEffects;
     const sideEffects: Promise<unknown>[] = [createNotificationsForUsers(notifications)];
+
     if (bidderEmail) {
       sideEffects.push(sendScoutWatchlistEmail({
         recipientEmail: bidderEmail,
@@ -145,6 +174,7 @@ export async function processAuctionAutoBid(auctionRoomId: string): Promise<Auto
         note: `Scout just placed a bid of $${proposedAmount.toFixed(2)} on your watched item. Your watchlist rule remains active until your maximum is reached.`,
       }));
     }
+
     const settled = await Promise.allSettled(sideEffects);
     settled.forEach((effect) => {
       if (effect.status === "rejected") {
