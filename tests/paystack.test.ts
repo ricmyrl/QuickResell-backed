@@ -49,18 +49,20 @@ test("Paystack bank list does not invent banks absent from the provider response
   );
 });
 
-test("Paystack bank list includes commercial banks and excludes microfinance banks", () => {
+test("Paystack bank list includes active banks outside a hard-coded bank-code list", () => {
   assert.deepEqual(
     normalizePaystackBanks([
       { name: "Advancly MFB", code: "090759", active: true },
-      { name: "Alert MFB", code: "090297", active: true },
-      { name: "Alpha Morgan Bank", code: "090", active: true },
       { name: "Access Bank", code: "044", active: true },
       { name: "Guaranty Trust Bank", code: "058", active: true },
+      { name: "New Nigerian Bank", code: "999001", active: true },
+      { name: "Inactive Bank", code: "999002", active: false },
     ]),
     [
       { name: "Access Bank", code: "044" },
+      { name: "Advancly MFB", code: "090759" },
       { name: "Guaranty Trust Bank", code: "058" },
+      { name: "New Nigerian Bank", code: "999001" },
     ],
   );
 });

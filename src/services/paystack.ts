@@ -11,19 +11,15 @@ export type PaystackTransaction = {
 
 export type PaystackBank = { name: string; code: string };
 
-const majorNigerianBankCodes = new Set([
-  "011", "023", "032", "033", "035", "044", "050", "057", "058",
-  "068", "070", "076", "082", "214", "215", "221", "232",
-]);
-
 export function normalizePaystackBanks(
   banks: Array<{ name?: unknown; code?: unknown; active?: unknown }>,
 ): PaystackBank[] {
   const normalized = banks
     .filter((bank): bank is { name: string; code: string; active?: unknown } =>
       typeof bank.name === "string" &&
+      bank.name.trim().length > 0 &&
       typeof bank.code === "string" &&
-      majorNigerianBankCodes.has(bank.code) &&
+      bank.code.trim().length > 0 &&
       bank.active !== false)
     .map(({ name, code }) => ({ name, code }));
 
