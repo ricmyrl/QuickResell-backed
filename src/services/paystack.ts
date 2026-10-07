@@ -11,6 +11,14 @@ export type PaystackTransaction = {
 
 export type PaystackBank = { name: string; code: string };
 
+const popularNigerianBankCodes = [
+  "044", "011", "058", "033", "057", "070", "214",
+  "221", "232", "035", "032", "076", "050", "082",
+];
+const popularNigerianBankOrder = new Map(
+  popularNigerianBankCodes.map((code, index) => [code, index]),
+);
+
 export function normalizePaystackBanks(
   banks: Array<{ name?: unknown; code?: unknown; active?: unknown }>,
 ): PaystackBank[] {
@@ -23,7 +31,16 @@ export function normalizePaystackBanks(
       bank.active !== false)
     .map(({ name, code }) => ({ name, code }));
 
-  return normalized.sort((left, right) => left.name.localeCompare(right.name));
+  return normalized.sort((left, right) => {
+    const leftOrder = popularNigerianBankOrder.get(left.code);
+    const rightOrder = popularNigerianBankOrder.get(right.code);
+    if (leftOrder !== undefined || rightOrder !== undefined) {
+      if (leftOrder === undefined) return 1;
+      if (rightOrder === undefined) return -1;
+      if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+    }
+    return left.name.localeCompare(right.name);
+  });
 }
 
 export function convertUsdToPayoutKobo(usdAmount: number, ngnRate: number): number {

@@ -60,9 +60,28 @@ test("Paystack bank list includes active banks outside a hard-coded bank-code li
     ]),
     [
       { name: "Access Bank", code: "044" },
-      { name: "Advancly MFB", code: "090759" },
       { name: "Guaranty Trust Bank", code: "058" },
+      { name: "Advancly MFB", code: "090759" },
       { name: "New Nigerian Bank", code: "999001" },
+    ],
+  );
+});
+
+test("Paystack bank list puts popular commercial banks first and sorts the rest alphabetically", () => {
+  assert.deepEqual(
+    normalizePaystackBanks([
+      { name: "Zenith Bank", code: "057", active: true },
+      { name: "Other Bank", code: "999001", active: true },
+      { name: "United Bank For Africa", code: "033", active: true },
+      { name: "Access Bank", code: "044", active: true },
+      { name: "Another Bank", code: "999002", active: true },
+    ]),
+    [
+      { name: "Access Bank", code: "044" },
+      { name: "United Bank For Africa", code: "033" },
+      { name: "Zenith Bank", code: "057" },
+      { name: "Another Bank", code: "999002" },
+      { name: "Other Bank", code: "999001" },
     ],
   );
 });
