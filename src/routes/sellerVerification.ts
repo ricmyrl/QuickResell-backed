@@ -158,11 +158,17 @@ router.get("/seller/verification/banks", async (_request, response) => {
     return;
   }
   try {
-    const result = await axios.get<{ status?: boolean; data?: Array<{ name?: unknown; code?: unknown; active?: unknown }> }>(
+    const result = await axios.get<{
+      status?: unknown;
+      data?: Array<{ name?: unknown; code?: unknown; active?: unknown }>;
+    }>(
       "https://api.paystack.co/bank",
-      { params: { country: "nigeria", use_cursor: true, perPage: 100 }, timeout: 15_000 },
+      { params: { country: "nigeria" }, timeout: 15_000 },
     );
-    cachedBanks = normalizePaystackBanks(result.data.data ?? []);
+    if (result.data.status !== true || !Array.isArray(result.data.data)) {
+      throw new Error("Paystack returned an invalid Nigerian bank list.");
+    }
+    cachedBanks = normalizePaystackBanks(result.data.data);
     banksLoadedAt = Date.now();
     response.json({ banks: cachedBanks });
   } catch (error) {
