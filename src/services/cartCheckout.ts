@@ -2,6 +2,7 @@ import type { Post } from "../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
 import { getExchangeRates } from "./exchangeRates.js";
 import { convertUsdToPayoutKobo, initiateSellerPayout, verifyPaystackTransaction } from "./paystack.js";
+import { isAuctionPaymentOnTime } from "./auctionPaymentPolicy.js";
 
 export class CartPaymentError extends Error {
   constructor(message: string, readonly status: number) {
@@ -10,7 +11,7 @@ export class CartPaymentError extends Error {
   }
 }
 
-type VerifiedCartPayment = { subtotalUsdCents: number; cartItemIds: string[] };
+type VerifiedCartPayment = { subtotalUsdCents: number; cartItemIds: string[]; paidAt: Date | null };
 
 export async function verifyCartPayment(reference: string, buyerId: string): Promise<VerifiedCartPayment> {
   let transaction;
@@ -43,7 +44,13 @@ export async function verifyCartPayment(reference: string, buyerId: string): Pro
     throw new CartPaymentError("The payment amount does not match the checkout total.", 402);
   }
 
-  return { subtotalUsdCents, cartItemIds };
+  const paidAtValue = transaction.paid_at;
+  const paidAt = typeof paidAtValue === "string" ? new Date(paidAtValue) : null;
+  return {
+    subtotalUsdCents,
+    cartItemIds,
+    paidAt: paidAt && Number.isFinite(paidAt.getTime()) ? paidAt : null,
+  };
 }
 
 function isAvailable(post: Post & { auctionRoom?: { status: string } | null }, userId: string, quantity: number): boolean {
@@ -100,7 +107,18 @@ export async function finalizeCartCheckout(reference: string, buyerId: string) {
       if (!locked.length) throw new CartPaymentError("A listing in your cart no longer exists. Contact support with your payment reference.", 409);
       const post = await transaction.post.findUnique({
         where: { id: item.postId },
-        include: { auctionRoom: { select: { id: true, status: true, highestBidderId: true, currentHighestBid: true } } },
+        include: {
+          auctionRoom: {
+            select: {
+              id: true,
+              status: true,
+              highestBidderId: true,
+              currentHighestBid: true,
+              paymentDueAt: true,
+              paymentGraceUntil: true,
+            },
+          },
+        },
       });
       if (!post) throw new CartPaymentError("An item in your cart is no longer available. Contact support with your payment reference.", 409);
       if (item.auctionRoomId) {
@@ -108,6 +126,14 @@ export async function finalizeCartCheckout(reference: string, buyerId: string) {
           throw new CartPaymentError(`“${post.title}” is no longer available. Contact support with your payment reference.`, 409);
         }
         if (!isAuctionCartItemAvailable({ auctionRoomId: item.auctionRoomId, post }, buyerId)) continue;
+        if (!verifiedPayment.paidAt
+          || !isAuctionPaymentOnTime(
+            verifiedPayment.paidAt,
+            post.auctionRoom.paymentDueAt,
+            post.auctionRoom.paymentGraceUntil,
+          )) {
+          throw new CartPaymentError(`The payment for auction item “${post.title}” was completed after its deadline. Contact support with your payment reference.`, 409);
+        }
       } else if (!isAvailable(post, buyerId, item.quantity)) {
         throw new CartPaymentError(`“${post.title}” is no longer available. Contact support with your payment reference.`, 409);
       }

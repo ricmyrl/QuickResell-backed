@@ -5,6 +5,7 @@ import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest }
 import { prisma } from "../lib/prisma.js";
 import { usdToNgnKobo } from "../services/exchangeRates.js";
 import { getPaystackCallbackUrl, getPaystackSecretKey, verifyPaystackTransaction } from "../services/paystack.js";
+import { auctionPaymentGraceMs } from "../services/auctionPaymentPolicy.js";
 
 const router = Router();
 
@@ -26,7 +27,18 @@ router.post("/payments/initialize", async (request, response) => {
           quantityAvailable: true,
           sellerId: true,
           status: true,
-          auctionRoom: { select: { id: true, status: true, highestBidderId: true, currentHighestBid: true } },
+          auctionRoom: {
+            select: {
+              id: true,
+              status: true,
+              highestBidderId: true,
+              currentHighestBid: true,
+              paymentDueAt: true,
+              paymentGraceUntil: true,
+              paymentGraceUsed: true,
+              buyerDefaultedAt: true,
+            },
+          },
         },
       },
     },
@@ -46,6 +58,19 @@ router.post("/payments/initialize", async (request, response) => {
   });
   if (eligibleItems.some((item) => item.auctionRoomId && item.post.auctionRoom?.highestBidderId !== buyer.id)) {
     response.status(409).json({ error: "An auction result changed. Refresh your cart and try again." });
+    return;
+  }
+  const paymentCheckedAt = new Date();
+  const overdueAuction = eligibleItems.find((item) => {
+    if (!item.auctionRoomId || !item.post.auctionRoom) return false;
+    const room = item.post.auctionRoom;
+    return room.buyerDefaultedAt !== null
+      || !room.paymentDueAt
+      || (paymentCheckedAt > room.paymentDueAt
+        && (!room.paymentGraceUntil || paymentCheckedAt > room.paymentGraceUntil));
+  });
+  if (overdueAuction) {
+    response.status(409).json({ error: "The payment deadline for an auction item has passed. Remove it from your cart and refresh." });
     return;
   }
   const unavailableItem = eligibleItems.some(({ post, quantity, auctionRoomId }) =>
@@ -100,6 +125,50 @@ router.post("/payments/initialize", async (request, response) => {
   }
 
   const reference = `QR-${randomUUID()}`;
+  const paymentInitializationStartedAt = new Date();
+  try {
+    await prisma.$transaction(async (transaction) => {
+      for (const item of eligibleItems) {
+        if (!item.auctionRoomId) continue;
+        const locked = await transaction.$queryRaw<Array<{ id: string }>>`
+          SELECT "id" FROM "AuctionRoom" WHERE "id" = ${item.auctionRoomId} FOR UPDATE
+        `;
+        if (!locked.length) throw new Error("An auction item changed before payment could start.");
+        const room = await transaction.auctionRoom.findUniqueOrThrow({
+          where: { id: item.auctionRoomId },
+          select: {
+            status: true,
+            highestBidderId: true,
+            paymentDueAt: true,
+            paymentGraceUntil: true,
+            paymentGraceUsed: true,
+            buyerDefaultedAt: true,
+          },
+        });
+        if (room.status !== "SOLD" || room.highestBidderId !== buyer.id || room.buyerDefaultedAt || !room.paymentDueAt) {
+          throw new Error("The auction result is no longer payable.");
+        }
+        if (paymentInitializationStartedAt <= room.paymentDueAt && !room.paymentGraceUsed) {
+          await transaction.auctionRoom.update({
+            where: { id: item.auctionRoomId },
+            data: {
+              paymentGraceUsed: true,
+              paymentGraceUntil: new Date(room.paymentDueAt.getTime() + auctionPaymentGraceMs),
+            },
+          });
+        } else if (
+          paymentInitializationStartedAt > room.paymentDueAt
+          && (!room.paymentGraceUntil || paymentInitializationStartedAt > room.paymentGraceUntil)
+        ) {
+          throw new Error("The payment deadline for an auction item has passed.");
+        }
+      }
+    });
+  } catch (error) {
+    response.status(409).json({ error: error instanceof Error ? error.message : "The auction item is no longer payable." });
+    return;
+  }
+
   try {
     const paystackResponse = await axios.post(
       "https://api.paystack.co/transaction/initialize",

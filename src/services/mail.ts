@@ -51,7 +51,7 @@ export async function sendAuctionWonEmail(
       from: `Quick Resell <noreply@${clientConfig.domain}>`,
       to: [targetRecipient],
       subject: `You won: ${cleanTitle}`,
-      text: `Congratulations! You won \"${cleanTitle}\" on Quick Resell for ${amount}. Please coordinate payment and pickup with the seller.`,
+      text: `Congratulations! You won \"${cleanTitle}\" on Quick Resell for ${amount}. Complete payment within 24 hours to keep your bidding privileges, then coordinate pickup with the seller.`,
       html: `
         <!doctype html>
         <html lang="en">

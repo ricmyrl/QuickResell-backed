@@ -3,7 +3,7 @@ import cors from "cors";
 import { randomUUID } from "node:crypto";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { prisma } from "./lib/prisma.js";
-import auctionsRouter, { finalizeExpiredAuctions } from "./routes/auctions.js";
+import auctionsRouter, { finalizeExpiredAuctions, finalizeUnpaidAuctionWins } from "./routes/auctions.js";
 import auctionWatchlistRouter from "./routes/auctionWatchlist.js";
 import accountRouter from "./routes/account.js";
 import cartRouter from "./routes/cart.js";
@@ -108,12 +108,12 @@ app.use((request, response) => {
   });
 });
 
-void finalizeExpiredAuctions().catch((error: unknown) => {
-  console.error("Failed to finalize expired auctions during startup.", error);
+void Promise.all([finalizeExpiredAuctions(), finalizeUnpaidAuctionWins()]).catch((error: unknown) => {
+  console.error("Failed to finalize auction timers during startup.", error);
 });
 const auctionFinalizationTimer = setInterval(() => {
-  void finalizeExpiredAuctions().catch((error: unknown) => {
-    console.error("Failed to finalize expired auctions.", error);
+  void Promise.all([finalizeExpiredAuctions(), finalizeUnpaidAuctionWins()]).catch((error: unknown) => {
+    console.error("Failed to finalize auction timers.", error);
   });
 }, 5_000);
 

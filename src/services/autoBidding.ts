@@ -2,7 +2,7 @@ import type { AuctionRoom, Bid, Prisma } from "../generated/prisma/client.js";
 import { createNotificationsForUsers } from "../lib/notifications.js";
 import { prisma } from "../lib/prisma.js";
 import { sendScoutWatchlistEmail } from "./mail.js";
-import { selectProxyBid } from "./bidLogic.js";
+import { minimumBidAmount, selectProxyBid } from "./bidLogic.js";
 
 const antiSnipeWindowMs = 10_000;
 const antiSnipeExtensionMs = 30_000;
@@ -31,9 +31,16 @@ export async function processAuctionAutoBid(auctionRoomId: string): Promise<Auto
       return { auctionRoom: room, bid: null };
     }
 
+    const listing = await transaction.post.findUniqueOrThrow({
+      where: { id: room.postId },
+      select: { price: true },
+    });
+    const bidFloor = Math.max(room.currentHighestBid, listing.price);
+    const minimumBid = minimumBidAmount(bidFloor, 0);
+
     // 2. Disable rules that have already been outbid
     await transaction.auctionWatchlistItem.updateMany({
-      where: { auctionRoomId, autoBidEnabled: true, maxBid: { lte: room.currentHighestBid } },
+      where: { auctionRoomId, autoBidEnabled: true, maxBid: { lt: minimumBid } },
       data: { autoBidEnabled: false },
     });
 
@@ -42,20 +49,24 @@ export async function processAuctionAutoBid(auctionRoomId: string): Promise<Auto
       where: {
         auctionRoomId,
         autoBidEnabled: true,
-        maxBid: { gt: room.currentHighestBid },
+        maxBid: { gte: minimumBid },
         userId: { not: room.sellerId },
       },
+      include: { user: { select: { biddingSuspendedUntil: true } } },
     });
+    const eligibleRules = rules.filter((rule) =>
+      !rule.user.biddingSuspendedUntil || rule.user.biddingSuspendedUntil <= new Date()
+    );
 
     const decision = selectProxyBid(
-      room.currentHighestBid,
+      bidFloor,
       room.highestBidderId,
       room.sellerId,
-      rules,
+      eligibleRules,
     );
     if (!decision) return { auctionRoom: room, bid: null };
 
-    const nextBidder = rules.find((rule) => rule.userId === decision.bidderId);
+    const nextBidder = eligibleRules.find((rule) => rule.userId === decision.bidderId);
     if (!nextBidder) return { auctionRoom: room, bid: null };
 
     const proposedAmount = decision.amount;

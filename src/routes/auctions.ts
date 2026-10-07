@@ -5,13 +5,13 @@ import { prisma } from "../lib/prisma.js";
 import { notifyAuctionResolution, notifyBidActivity } from "../lib/notifications.js";
 import { sendAuctionWonEmail } from "../services/mail.js";
 import { processAuctionAutoBid } from "../services/autoBidding.js";
-import { isValidManualBidAmount } from "../services/bidLogic.js";
+import { isValidManualBidAmount, minimumBidAmount } from "../services/bidLogic.js";
+import { auctionPaymentWindowMs, buyerBidSuspensionMonths, buyerDefaultPenaltyPoints } from "../services/auctionPaymentPolicy.js";
 import { emptyListingReactionCounts, getListingReactionCounts } from "../services/listingReactions.js";
 
 const router = Router();
 const antiSnipeWindowMs = 10_000;
 const antiSnipeExtensionMs = 30_000;
-
 export type AuctionVerdict = "ACCEPT" | "REJECT";
 type AuctionVerdictRequest = { decision: AuctionVerdict };
 type RouteError = { error: string; status: 400 | 403 | 404 | 409 };
@@ -19,6 +19,7 @@ type BidPlacementResult = RouteError | { bid: Bid; auctionRoom: AuctionRoom; pre
 type CloseAuctionResult = RouteError | { auctionRoom: AuctionRoom; alreadyFinalized: boolean };
 type VerdictResult = RouteError | { auctionRoom: AuctionRoom; trustScore: number };
 let finalizationInProgress = false;
+let unpaidAuctionFinalizationInProgress = false;
 
 async function notifyAcceptedWinner(
   auctionRoomId: string,
@@ -155,6 +156,107 @@ export async function finalizeExpiredAuctions(): Promise<void> {
     throw error;
   } finally {
     finalizationInProgress = false;
+  }
+}
+
+export async function finalizeUnpaidAuctionWins(): Promise<void> {
+  if (unpaidAuctionFinalizationInProgress) return;
+  unpaidAuctionFinalizationInProgress = true;
+
+  try {
+    const now = new Date();
+    const overdueRooms = await prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT room."id"
+      FROM "AuctionRoom" AS room
+      WHERE room."status" = 'SOLD'::"AuctionRoomStatus"
+        AND room."buyerDefaultedAt" IS NULL
+        AND room."highestBidderId" IS NOT NULL
+        AND room."paymentDueAt" <= ${now}
+        AND (room."paymentGraceUntil" IS NULL OR room."paymentGraceUntil" <= ${now})
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "PurchaseOrderItem" AS item
+          INNER JOIN "PurchaseOrder" AS purchase ON purchase."id" = item."orderId"
+          WHERE item."postId" = room."postId"
+            AND purchase."buyerId" = room."highestBidderId"
+            AND purchase."status" <> 'CANCELLED'::"PurchaseOrderStatus"
+        )
+      ORDER BY room."paymentDueAt" ASC
+      LIMIT 100
+    `;
+
+    for (const { id } of overdueRooms) {
+      await prisma.$transaction(async (transaction) => {
+        const candidate = await transaction.auctionRoom.findUnique({
+          where: { id },
+          select: { highestBidderId: true },
+        });
+        if (!candidate?.highestBidderId) return;
+
+        await transaction.$queryRaw<Array<{ id: string }>>`
+          SELECT "id" FROM "User" WHERE "id" = ${candidate.highestBidderId}::uuid FOR UPDATE
+        `;
+        const room = await lockAuctionRoom(transaction, id);
+        if (!room?.highestBidderId || room.status !== "SOLD" || room.buyerDefaultedAt) return;
+        if (!room.paymentDueAt || room.paymentDueAt > now || (room.paymentGraceUntil && room.paymentGraceUntil > now)) return;
+
+        const paidOrders = await transaction.$queryRaw<Array<{ paid: boolean }>>`
+          SELECT EXISTS (
+            SELECT 1
+            FROM "PurchaseOrderItem" AS item
+            INNER JOIN "PurchaseOrder" AS purchase ON purchase."id" = item."orderId"
+            WHERE item."postId" = ${room.postId}
+              AND purchase."buyerId" = ${room.highestBidderId}::uuid
+              AND purchase."status" <> 'CANCELLED'::"PurchaseOrderStatus"
+          ) AS paid
+        `;
+        if (paidOrders[0]?.paid) return;
+
+        await transaction.auctionRoom.update({
+          where: { id: room.id },
+          data: { status: "CLOSED", buyerDefaultedAt: now },
+        });
+        const listing = await transaction.post.update({
+          where: { id: room.postId },
+          data: { status: "ACTIVE" },
+          select: { title: true },
+        });
+        await transaction.$executeRaw`
+          UPDATE "User"
+          SET "backedOutAuctions" = "backedOutAuctions" + 1,
+              "trustScore" = GREATEST(0.0, "trustScore" - ${buyerDefaultPenaltyPoints}),
+              "biddingSuspendedUntil" = GREATEST(COALESCE("biddingSuspendedUntil", ${now}), ${now}) + (${buyerBidSuspensionMonths} * INTERVAL '1 month')
+          WHERE "id" = ${room.highestBidderId}::uuid
+        `;
+        await transaction.auctionWatchlistItem.updateMany({
+          where: { userId: room.highestBidderId, autoBidEnabled: true },
+          data: { autoBidEnabled: false },
+        });
+        await transaction.cartItem.deleteMany({ where: { auctionRoomId: room.id } });
+        await transaction.notification.createMany({
+          data: [
+            {
+              userId: room.highestBidderId,
+              type: "ORDER_UPDATE",
+              title: "Auction payment deadline missed",
+              message: `You did not pay for “${listing.title}” within 24 hours of the seller accepting your bid. Your trust score was reduced by ${buyerDefaultPenaltyPoints} points and bidding is suspended for six months.`,
+              entityType: "auction",
+              entityId: room.id,
+            },
+            {
+              userId: room.sellerId,
+              type: "ORDER_UPDATE",
+              title: "Winning buyer did not pay",
+              message: `The winning buyer did not pay for “${listing.title}” before the deadline. The listing is active again and available to sell.`,
+              entityType: "auction",
+              entityId: room.id,
+            },
+          ],
+        });
+      });
+    }
+  } finally {
+    unpaidAuctionFinalizationInProgress = false;
   }
 }
 
@@ -323,13 +425,22 @@ router.post("/auctions/:auctionRoomId/bids", async (request, response) => {
   }
 
   const result = await prisma.$transaction<BidPlacementResult>(async (transaction) => {
+    const now = new Date();
+    const bidderRows = await transaction.$queryRaw<Array<{ biddingSuspendedUntil: Date | null }>>`
+      SELECT "biddingSuspendedUntil" FROM "User" WHERE "id" = ${bidder.id}::uuid FOR UPDATE
+    `;
+    const biddingSuspendedUntil = bidderRows[0]?.biddingSuspendedUntil;
+    if (biddingSuspendedUntil && biddingSuspendedUntil > now) {
+      return {
+        error: `Your bidding privileges are suspended until ${biddingSuspendedUntil.toISOString()} because of an unpaid winning bid.`,
+        status: 403 as const,
+      };
+    }
     const room = await lockAuctionRoom(transaction, request.params.auctionRoomId);
     if (!room) return { error: "Auction room not found.", status: 404 as const };
     if (room.sellerId === bidder.id) {
       return { error: "Sellers cannot bid in their own auction.", status: 403 as const };
     }
-
-    const now = new Date();
     if (room.status !== "ACTIVE" || room.endsAt <= now) {
       if (room.status === "ACTIVE") {
         await moveExpiredAuctionToApproval(transaction, room, now);
@@ -341,10 +452,10 @@ router.post("/auctions/:auctionRoomId/bids", async (request, response) => {
       select: { price: true, title: true },
     });
     if (!listing) return { error: "Auction listing not found.", status: 404 as const };
-    const minimumBid = Math.max(room.currentHighestBid, listing.price);
-    if (amount <= minimumBid) {
+    const minimumBid = minimumBidAmount(room.currentHighestBid, listing.price);
+    if (amount < minimumBid) {
       return {
-        error: `Bid must be greater than the current minimum of ${minimumBid}.`,
+        error: `Bid must be at least ${minimumBid}.`,
         status: 400 as const,
       };
     }
@@ -500,9 +611,10 @@ router.post("/auctions/:roomId/verdict", async (request, response) => {
     }
 
     if (decision === "ACCEPT") {
+      const paymentDueAt = new Date(now.getTime() + auctionPaymentWindowMs);
       const auctionRoom = await transaction.auctionRoom.update({
         where: { id: currentRoom.id },
-        data: { status: "SOLD" },
+        data: { status: "SOLD", paymentDueAt, paymentGraceUntil: null, paymentGraceUsed: false },
       });
       await transaction.post.update({
         where: { id: currentRoom.postId },

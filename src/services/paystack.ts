@@ -6,6 +6,7 @@ export type PaystackTransaction = {
   reference?: unknown;
   currency?: unknown;
   amount?: unknown;
+  paid_at?: unknown;
   metadata?: Record<string, unknown>;
 };
 

@@ -3,7 +3,7 @@ import type { AuctionWatchlistItem, User } from "../generated/prisma/client.js";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
 import { processAuctionAutoBid } from "../services/autoBidding.js";
-import { maxAllowedBid } from "../services/bidLogic.js";
+import { maxAllowedBid, minimumBidAmount } from "../services/bidLogic.js";
 import { sendScoutWatchlistEmail } from "../services/mail.js";
 
 const router = Router();
@@ -74,10 +74,23 @@ router.put("/watchlist/auctions/:auctionRoomId", async (request, response) => {
     response.status(403).json({ error: "Confirm authorization before enabling Scout bidding." });
     return;
   }
+  if (autoBidEnabled) {
+    const account = await prisma.user.findUnique({
+      where: { id: user.id },
+      select: { biddingSuspendedUntil: true },
+    });
+    if (account?.biddingSuspendedUntil && account.biddingSuspendedUntil > new Date()) {
+      response.status(403).json({
+        error: "Your bidding privileges are suspended until the active restriction ends.",
+        biddingSuspendedUntil: account.biddingSuspendedUntil,
+      });
+      return;
+    }
+  }
 
   const auctionRoom = await prisma.auctionRoom.findUnique({
     where: { id: request.params.auctionRoomId },
-    select: { id: true, sellerId: true, status: true, endsAt: true, currentHighestBid: true },
+    select: { id: true, sellerId: true, status: true, endsAt: true, currentHighestBid: true, post: { select: { price: true } } },
   });
   if (!auctionRoom) {
     response.status(404).json({ error: "Auction room not found." });
@@ -91,8 +104,9 @@ router.put("/watchlist/auctions/:auctionRoomId", async (request, response) => {
     response.status(409).json({ error: "Only live auctions can have an active bid rule." });
     return;
   }
-  if (autoBidEnabled && maxBid <= auctionRoom.currentHighestBid) {
-    response.status(409).json({ error: "Your maximum must be above the current bid to enable Scout bidding." });
+  const minimumBid = minimumBidAmount(auctionRoom.currentHighestBid, auctionRoom.post.price);
+  if (autoBidEnabled && maxBid < minimumBid) {
+    response.status(409).json({ error: `Your maximum must be at least ${minimumBid} to enable Scout bidding.` });
     return;
   }
 

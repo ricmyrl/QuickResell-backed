@@ -135,7 +135,7 @@ export async function notifyAuctionResolution({
   } satisfies Record<typeof type, string>;
 
   const messageMap = {
-    AUCTION_WON: `You won “${auctionTitle}” for $${finalPrice.toFixed(2)}.`,
+    AUCTION_WON: `You won “${auctionTitle}” for $${finalPrice.toFixed(2)}. Pay within 24 hours to complete the purchase and keep your bidding privileges.`,
     AUCTION_CLOSED: `The auction for “${auctionTitle}” closed at $${finalPrice.toFixed(2)}${reason ? ` (${reason})` : ""}.`,
     LISTING_SOLD: `“${auctionTitle}” sold for $${finalPrice.toFixed(2)}.`,
     PRICE_UPDATED: `The asking price for “${auctionTitle}” changed to $${finalPrice.toFixed(2)}${reason ? ` (${reason})` : ""}.`,

@@ -95,6 +95,7 @@ model User {
   trustScore            Float          @default(50.0)
   completedAuctions     Int            @default(0)
   backedOutAuctions     Int            @default(0)
+  biddingSuspendedUntil DateTime?
   savedCategories       String[]       @default([])
   embedding             Json?
   createdAt             DateTime       @default(now())
@@ -300,6 +301,10 @@ model AuctionRoom {
   highestBidderId   String?           @db.Uuid
   isPublic          Boolean           @default(false)
   reservePrice      Float?
+  paymentDueAt      DateTime?
+  paymentGraceUntil DateTime?
+  paymentGraceUsed  Boolean           @default(false)
+  buyerDefaultedAt  DateTime?
   status            AuctionRoomStatus @default(ACTIVE)
   endsAt            DateTime
   createdAt         DateTime          @default(now())
@@ -312,6 +317,7 @@ model AuctionRoom {
   cartItems         CartItem[]
 
   @@index([status, endsAt])
+  @@index([status, paymentDueAt])
   @@index([isPublic, status, endsAt])
   @@index([sellerId, createdAt])
 }
