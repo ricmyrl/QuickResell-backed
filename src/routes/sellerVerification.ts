@@ -157,17 +157,10 @@ router.get("/seller/verification/banks", async (_request, response) => {
     response.json({ banks: cachedBanks });
     return;
   }
-  let secretKey: string;
-  try {
-    secretKey = getPaystackSecretKey();
-  } catch (error) {
-    response.status(503).json({ error: error instanceof Error ? error.message : "Paystack is not configured." });
-    return;
-  }
   try {
     const result = await axios.get<{ status?: boolean; data?: Array<{ name?: unknown; code?: unknown; active?: unknown }> }>(
       "https://api.paystack.co/bank",
-      { headers: { Authorization: `Bearer ${secretKey}` }, params: { country: "nigeria", use_cursor: true, perPage: 100 }, timeout: 15_000 },
+      { params: { country: "nigeria", use_cursor: true, perPage: 100 }, timeout: 15_000 },
     );
     cachedBanks = normalizePaystackBanks(result.data.data ?? []);
     banksLoadedAt = Date.now();
