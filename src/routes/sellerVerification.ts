@@ -303,50 +303,95 @@ router.post("/seller/verification/identity/manual-review", async (request, respo
     return;
   }
 
+  let secretKey: string;
+  try {
+    secretKey = getPaystackSecretKey();
+  } catch (error) {
+    response.status(503).json({ error: error instanceof Error ? error.message : "Paystack is not configured." });
+    return;
+  }
+
+  let accountName: string;
+  try {
+    const resolved = await axios.get<{ status?: boolean; data?: { account_name?: unknown; account_number?: unknown } }>(
+      "https://api.paystack.co/bank/resolve",
+      { headers: { Authorization: `Bearer ${secretKey}` }, params: { account_number: accountNumber, bank_code: bankCode }, timeout: 15_000 },
+    );
+    if (resolved.data.status !== true ||
+        typeof resolved.data.data?.account_name !== "string" ||
+        resolved.data.data.account_number !== accountNumber) {
+      response.status(422).json({
+        error: "The bank account could not be verified for the selected bank. Check the bank and account number.",
+        code: "BANK_ACCOUNT_INVALID",
+      });
+      return;
+    }
+    accountName = resolved.data.data.account_name;
+  } catch (error) {
+    const providerStatus = axios.isAxiosError(error) ? error.response?.status : undefined;
+    const status = providerStatus === 401 || providerStatus === 403
+      ? 503
+      : providerStatus && providerStatus < 500
+        ? 422
+        : 502;
+    console.error("Paystack bank account resolution failed.", {
+      stage: "BANK_ACCOUNT_RESOLVE",
+      status: providerStatus,
+      code: axios.isAxiosError(error) ? error.code : undefined,
+    });
+    response.status(status).json({
+      error: status === 422
+        ? "The bank account could not be verified for the selected bank. Check the bank and account number."
+        : status === 503
+          ? "Paystack credentials are not authorized to verify bank accounts."
+          : "Paystack could not check the bank account right now. Please retry.",
+      code: status === 422 ? "BANK_ACCOUNT_INVALID" : "BANK_ACCOUNT_CHECK_UNAVAILABLE",
+    });
+    return;
+  }
+
+  if (!hashPayoutNameMatches(accountName, hashVerifiedName(legalName, hashSecret), hashSecret)) {
+    response.status(422).json({
+      error: "The bank account is valid, but its account-holder name does not match the legal name entered.",
+      code: "ACCOUNT_NAME_MISMATCH",
+    });
+    return;
+  }
+
   try {
     await validatePaystackIdentityAndBankAccount({
-      legalName: legalName.trim(),
+      legalName: accountName,
       idType,
       idNumber,
       bankCode,
       accountNumber,
     });
   } catch (error) {
-    const status = axios.isAxiosError(error) && error.response?.status
-      ? (error.response.status === 401 || error.response.status === 403 ? 503 : error.response.status < 500 ? 422 : 502)
-      : error instanceof Error && /SELLER_VERIFICATION_HASH_SECRET|PAYSTACK_SECRET_KEY/.test(error.message)
-        ? 503
-        : error instanceof Error && /could not validate/i.test(error.message)
-          ? 422
+    const providerStatus = axios.isAxiosError(error) ? error.response?.status : undefined;
+    const status = providerStatus === 401 || providerStatus === 403
+      ? 503
+      : providerStatus && providerStatus < 500
+        ? 422
+        : error instanceof Error && /PAYSTACK_SECRET_KEY/.test(error.message)
+          ? 503
           : 502;
     console.error("Paystack identity check failed.", {
-      status: axios.isAxiosError(error) ? error.response?.status : undefined,
+      stage: "IDENTITY_ACCOUNT_MATCH",
+      status: providerStatus,
       code: axios.isAxiosError(error) ? error.code : undefined,
     });
     response.status(status).json({
       error: status === 422
-        ? `Paystack could not validate this ${idType} and bank account. Check the details and try again.`
-        : "Paystack identity validation is temporarily unavailable. Please retry.",
+        ? `The bank account and account-holder name were verified, but Paystack could not match this ${idType} to the account. Check the ${idType} number and make sure it belongs to this account holder.`
+        : status === 503
+          ? "Paystack credentials are not authorized to verify identity."
+          : "The bank account is valid, but Paystack could not check the identity right now. Please retry.",
+      code: status === 422 ? "IDENTITY_ACCOUNT_MISMATCH" : "IDENTITY_CHECK_UNAVAILABLE",
     });
     return;
   }
 
   try {
-    const secretKey = getPaystackSecretKey();
-    const resolved = await axios.get<{ status?: boolean; data?: { account_name?: unknown; account_number?: unknown } }>(
-      "https://api.paystack.co/bank/resolve",
-      { headers: { Authorization: `Bearer ${secretKey}` }, params: { account_number: accountNumber, bank_code: bankCode }, timeout: 15_000 },
-    );
-    const accountName = resolved.data.data?.account_name;
-    if (resolved.data.status !== true || typeof accountName !== "string" || resolved.data.data?.account_number !== accountNumber) {
-      response.status(422).json({ error: "Paystack could not verify this bank account." });
-      return;
-    }
-    if (!hashPayoutNameMatches(accountName, hashVerifiedName(legalName, hashSecret), hashSecret)) {
-      response.status(422).json({ error: "The account holder name does not match your legal identity. Use an account in your own name." });
-      return;
-    }
-
     const bank = cachedBanks.find((item) => item.code === bankCode);
     const recipient = await createPaystackTransferRecipient({ name: accountName, accountNumber, bankCode });
     const now = new Date();
