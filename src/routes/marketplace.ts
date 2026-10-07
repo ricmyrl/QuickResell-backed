@@ -14,6 +14,15 @@ const feedTypes: MarketplaceFeedType[] = ["FOR_YOU", "DEALS", "NEARBY", "EXPLORE
 const maxFeedCandidates = 500;
 const maxListingImages = 8;
 const maxAuctionDurationHours = 30 * 24;
+const listingCategories = [
+  { id: "category_books", name: "Books" },
+  { id: "category_clothing", name: "Clothing" },
+  { id: "category_electronics", name: "Electronics" },
+  { id: "category_furniture", name: "Furniture" },
+  { id: "category_dorm_essentials", name: "Dorm Essentials" },
+  { id: "category_sports_outdoors", name: "Sports & Outdoors" },
+  { id: "category_other", name: "Other" },
+];
 
 function publicDiscussionPostWhere() {
   return {
@@ -48,6 +57,10 @@ function isOwnedStorageUrl(value: unknown, ownerId: string): value is string {
 }
 
 router.get("/categories", async (_request, response) => {
+  await prisma.category.createMany({
+    data: listingCategories,
+    skipDuplicates: true,
+  });
   const categories = await prisma.category.findMany({ orderBy: { name: "asc" } });
   response.json({ categories });
 });

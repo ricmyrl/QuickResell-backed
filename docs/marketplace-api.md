@@ -17,7 +17,7 @@ with check (
 );
 ```
 
-Set the variables from `.env.example`. Use the Supabase pooler URL for `DATABASE_URL` at runtime and the direct database URL for `DIRECT_URL` migrations. Then run `npm run prisma:generate` and `npm run db:migrate`; migrations provision the listing categories. Run `npm run db:seed` only when you also want the demo users and listings.
+Set the variables from `.env.example`. Use the Supabase pooler URL for `DATABASE_URL` at runtime and the direct database URL for `DIRECT_URL` migrations. Then run `npm run prisma:generate` and `npm run db:migrate`; migrations provision the listing categories, and the categories endpoint also ensures they exist. Run `npm run db:seed` only when you also want the demo users and listings.
 
 ## Account and Profile
 
