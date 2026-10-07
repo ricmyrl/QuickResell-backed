@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import axios from "axios";
 import { createHmac } from "node:crypto";
 import test from "node:test";
-import { getPaystackCallbackUrl, getPaystackSecretKey, normalizeNigerianIdentityNumber, normalizePaystackBanks, validatePaystackIdentityAndBankAccount, verifyPaystackWebhookSignature } from "../src/services/paystack.js";
+import { getPaystackCallbackUrl, getPaystackProviderErrorMessage, getPaystackSecretKey, normalizeNigerianIdentityNumber, normalizePaystackBanks, validatePaystackIdentityAndBankAccount, verifyPaystackWebhookSignature } from "../src/services/paystack.js";
 
 test("production requires a live Paystack secret key", () => {
   assert.equal(getPaystackSecretKey({ NODE_ENV: "development", PAYSTACK_SECRET_KEY: "sk_test_example" }), "sk_test_example");
@@ -71,6 +71,18 @@ test("Paystack identity validation includes the selected bank code", async () =>
   } finally {
     axios.defaults.adapter = originalAdapter;
   }
+});
+
+test("Paystack provider errors are retained without exposing identity numbers", () => {
+  const error = {
+    isAxiosError: true,
+    response: { data: { message: "BVN 12345678901 did not match account 0123456789" } },
+  };
+  assert.equal(
+    getPaystackProviderErrorMessage(error),
+    "BVN [redacted] did not match account [redacted]",
+  );
+  assert.equal(getPaystackProviderErrorMessage(new Error("not a provider error")), undefined);
 });
 
 test("Paystack bank list does not invent banks absent from the provider response", () => {

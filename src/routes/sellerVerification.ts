@@ -4,7 +4,7 @@ import { Router, type Request } from "express";
 import type { User } from "../generated/prisma/client.js";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
-import { createPaystackTransferRecipient, normalizeNigerianIdentityNumber, normalizePaystackBanks, validatePaystackIdentityAndBankAccount } from "../services/paystack.js";
+import { createPaystackTransferRecipient, getPaystackProviderErrorMessage, normalizeNigerianIdentityNumber, normalizePaystackBanks, validatePaystackIdentityAndBankAccount } from "../services/paystack.js";
 import { getPaystackSecretKey } from "../services/paystack.js";
 import {
   getSellerVerificationProvider,
@@ -329,6 +329,7 @@ router.post("/seller/verification/identity/manual-review", async (request, respo
     accountName = resolved.data.data.account_name;
   } catch (error) {
     const providerStatus = axios.isAxiosError(error) ? error.response?.status : undefined;
+    const providerMessage = getPaystackProviderErrorMessage(error);
     const status = providerStatus === 401 || providerStatus === 403
       ? 503
       : providerStatus && providerStatus < 500
@@ -368,6 +369,7 @@ router.post("/seller/verification/identity/manual-review", async (request, respo
     });
   } catch (error) {
     const providerStatus = axios.isAxiosError(error) ? error.response?.status : undefined;
+    const providerMessage = getPaystackProviderErrorMessage(error);
     const status = providerStatus === 401 || providerStatus === 403
       ? 503
       : providerStatus && providerStatus < 500
@@ -379,14 +381,15 @@ router.post("/seller/verification/identity/manual-review", async (request, respo
       stage: "IDENTITY_ACCOUNT_MATCH",
       status: providerStatus,
       code: axios.isAxiosError(error) ? error.code : undefined,
+      providerMessage,
     });
     response.status(status).json({
       error: status === 422
-        ? `The bank account and account-holder name were verified, but Paystack could not match this ${idType} to the account. Check the ${idType} number and make sure it belongs to this account holder.`
+        ? `The bank account and account-holder name were verified, but Paystack rejected the identity validation request${providerStatus ? ` (HTTP ${providerStatus})` : ""}. This does not confirm that the ${idType} is invalid.${providerMessage ? ` Paystack response: ${providerMessage}` : ""}`
         : status === 503
           ? "Paystack credentials are not authorized to verify identity."
           : "The bank account is valid, but Paystack could not check the identity right now. Please retry.",
-      code: status === 422 ? "IDENTITY_ACCOUNT_MISMATCH" : "IDENTITY_CHECK_UNAVAILABLE",
+      code: status === 422 ? "IDENTITY_VALIDATION_REJECTED" : "IDENTITY_CHECK_UNAVAILABLE",
     });
     return;
   }

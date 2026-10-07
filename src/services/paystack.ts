@@ -11,6 +11,17 @@ export type PaystackTransaction = {
 
 export type PaystackBank = { name: string; code: string };
 
+export function getPaystackProviderErrorMessage(error: unknown): string | undefined {
+  if (!axios.isAxiosError<{ message?: unknown }>(error)) return undefined;
+  const message = error.response?.data?.message;
+  if (typeof message !== "string" || !message.trim()) return undefined;
+  return message
+    .replace(/\b\d{10,11}\b/g, "[redacted]")
+    .replace(/[\r\n\t]+/g, " ")
+    .trim()
+    .slice(0, 240);
+}
+
 const popularNigerianBankCodes = [
   "044", "011", "058", "033", "057", "070", "214",
   "221", "232", "035", "032", "076", "050", "082",
