@@ -36,25 +36,21 @@ test("sellers with verified payout and Paystack manual identity review can publi
   assert.equal(canPublishListings({
     identityStatus: "REVIEW_REQUIRED",
     payoutStatus: "VERIFIED",
-    failureCode: "IDENTITY_MANUAL_REVIEW",
   }), true);
 });
 
-test("listing publication still requires verified payout and approved identity or the manual-review state", () => {
+test("listing publication still requires verified payout and an identity state eligible to sell", () => {
   assert.equal(canPublishListings(null), false);
   assert.equal(canPublishListings({
     identityStatus: "VERIFIED",
     payoutStatus: "NOT_STARTED",
-    failureCode: null,
-  }), false);
-  assert.equal(canPublishListings({
-    identityStatus: "REVIEW_REQUIRED",
-    payoutStatus: "VERIFIED",
-    failureCode: "OTHER_REVIEW_REASON",
   }), false);
   assert.equal(canPublishListings({
     identityStatus: "REJECTED",
     payoutStatus: "VERIFIED",
-    failureCode: "IDENTITY_MANUAL_REVIEW",
+  }), false);
+  assert.equal(canPublishListings({
+    identityStatus: "PENDING",
+    payoutStatus: "VERIFIED",
   }), false);
 });

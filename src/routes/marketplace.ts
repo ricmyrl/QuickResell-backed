@@ -397,7 +397,7 @@ router.post("/listings", async (request, response) => {
   const seller = currentUser(request);
   const verification = await prisma.sellerVerification.findUnique({
     where: { userId: seller.id },
-    select: { identityStatus: true, payoutStatus: true, failureCode: true },
+    select: { identityStatus: true, payoutStatus: true },
   });
   if (!canPublishListings(verification)) {
     response.status(403).json({
