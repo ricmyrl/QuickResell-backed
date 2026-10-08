@@ -1,6 +1,7 @@
 import { Router, type Request } from "express";
+import { createHash } from "node:crypto";
 import type { User } from "../generated/prisma/client.js";
-import { ListingReactionType } from "../generated/prisma/client.js";
+import { ListingReactionType, Prisma } from "../generated/prisma/client.js";
 import { optionalSupabaseUser, requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
 import { createNotificationsForUsers } from "../lib/notifications.js";
@@ -15,6 +16,7 @@ const feedTypes: MarketplaceFeedType[] = ["FOR_YOU", "DEALS", "NEARBY", "EXPLORE
 const maxFeedCandidates = 500;
 const maxListingImages = 8;
 const maxAuctionDurationHours = 30 * 24;
+const maxFeedSeenIds = 100;
 const listingCategories = [
   { id: "category_books", name: "Books" },
   { id: "category_clothing", name: "Clothing" },
@@ -42,6 +44,49 @@ function currentUser(request: Request): User {
   return user;
 }
 
+type ProductFeedCursor = {
+  version: 1;
+  rank: 0 | 1;
+  createdAt: string;
+  id: string;
+  seenHash: string;
+};
+
+function parseSeenIds(value: unknown): string[] | null {
+  const values = value === undefined ? [] : Array.isArray(value) ? value : [value];
+  const ids = values.flatMap((entry) =>
+    typeof entry === "string" ? entry.split(",").filter(Boolean) : [entry],
+  );
+  if (
+    ids.length > maxFeedSeenIds ||
+    ids.some((id) => typeof id !== "string" || id.length > 128 || !/^[A-Za-z0-9_-]+$/.test(id))
+  ) return null;
+  return [...new Set(ids as string[])];
+}
+
+function seenIdsHash(ids: string[]): string {
+  return createHash("sha256").update([...ids].sort().join("\0")).digest("hex");
+}
+
+function parseProductFeedCursor(value: unknown): ProductFeedCursor | null {
+  if (typeof value !== "string" || value.length > 4096) return null;
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (
+      typeof parsed !== "object" || parsed === null ||
+      !("version" in parsed) || parsed.version !== 1 ||
+      !("rank" in parsed) || (parsed.rank !== 0 && parsed.rank !== 1) ||
+      !("createdAt" in parsed) || typeof parsed.createdAt !== "string" ||
+      Number.isNaN(Date.parse(parsed.createdAt)) ||
+      !("id" in parsed) || typeof parsed.id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(parsed.id) ||
+      !("seenHash" in parsed) || typeof parsed.seenHash !== "string" || !/^[a-f0-9]{64}$/.test(parsed.seenHash)
+    ) return null;
+    return parsed as ProductFeedCursor;
+  } catch {
+    return null;
+  }
+}
+
 function isOwnedStorageUrl(value: unknown, ownerId: string): value is string {
   const supabaseUrl = process.env.SUPABASE_URL;
   if (typeof value !== "string" || !supabaseUrl) return false;
@@ -66,56 +111,108 @@ router.get("/categories", async (_request, response) => {
   response.json({ categories });
 });
 
-router.get("/store", optionalSupabaseUser, async (request, response) => {
+router.get(["/store", "/feed/products"], optionalSupabaseUser, async (request, response) => {
   const viewerId = (request as AuthenticatedRequest).marketplaceUser?.id;
   const requestedLimit = Number(request.query.limit ?? 50);
   if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 50) {
     response.status(400).json({ error: "limit must be an integer between 1 and 50." });
     return;
   }
-  const cursorId = request.query.cursor;
-  if (cursorId !== undefined && typeof cursorId !== "string") {
-    response.status(400).json({ error: "cursor must be a listing ID." });
+  const seenIds = parseSeenIds(request.query.seenIds);
+  if (!seenIds) {
+    response.status(400).json({ error: `seenIds must contain at most ${maxFeedSeenIds} valid item IDs.` });
     return;
   }
-  if (typeof cursorId === "string") {
-    const cursorExists = await prisma.post.findUnique({
-      where: { id: cursorId },
-      select: { id: true },
-    });
-    if (!cursorExists) {
-      response.status(400).json({ error: "cursor does not match a product listing." });
-      return;
-    }
+  const seenHash = seenIdsHash(seenIds);
+  const cursorValue = request.query.cursor;
+  const cursor = cursorValue === undefined ? null : parseProductFeedCursor(cursorValue);
+  if (cursorValue !== undefined && !cursor) {
+    response.status(400).json({ error: "cursor is invalid." });
+    return;
   }
-  const items = await prisma.post.findMany({
-    where: {
-      status: "ACTIVE",
-      quantityAvailable: { gt: 0 },
-      auctionRoom: { is: null },
-    },
-    orderBy: [{ createdAt: "desc" }, { id: "asc" }],
-    ...(typeof cursorId === "string" ? { cursor: { id: cursorId }, skip: 1 } : {}),
-    take: requestedLimit + 1,
-    include: {
-      category: true,
-      images: { orderBy: { sortOrder: "asc" } },
-      user: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true, completedAuctions: true, isCampusVerified: true } },
-      _count: { select: { comments: true, listingReactions: true } },
-      listingReactions: viewerId
-        ? { where: { userId: viewerId }, select: { type: true } }
-        : { take: 0, select: { type: true } },
-    },
-  });
-  const hasMore = items.length > requestedLimit;
-  const listings = hasMore ? items.slice(0, requestedLimit) : items;
+  if (cursor && cursor.seenHash !== seenHash) {
+    response.status(409).json({
+      error: "The seen-item set changed during pagination. Refresh the feed to continue.",
+      code: "FEED_CURSOR_STALE",
+    });
+    return;
+  }
+  const requestedPage = Number(request.query.page ?? 1);
+  if (!Number.isInteger(requestedPage) || requestedPage < 1 || requestedPage > 10_000 ||
+      (cursor && request.query.page !== undefined)) {
+    response.status(400).json({ error: "page must be an integer between 1 and 10000 and cannot be combined with cursor." });
+    return;
+  }
+  const seenIdFilter = seenIds.length
+    ? Prisma.sql`p."id" IN (${Prisma.join(seenIds)})`
+    : Prisma.sql`FALSE`;
+  const rankExpression = Prisma.sql`CASE WHEN ${seenIdFilter} THEN 1 ELSE 0 END`;
+  const cursorCondition = cursor
+    ? Prisma.sql`AND (
+        ${rankExpression} > ${cursor.rank}
+        OR (
+          ${rankExpression} = ${cursor.rank}
+          AND (
+            p."createdAt" < ${new Date(cursor.createdAt)}
+            OR (p."createdAt" = ${new Date(cursor.createdAt)} AND p."id" > ${cursor.id})
+          )
+        )
+      )`
+    : Prisma.empty;
+  const offset = cursor ? 0 : (requestedPage - 1) * requestedLimit;
+  const { rankedRows, listings } = await prisma.$transaction(async (transaction) => {
+    const rankedRows = await transaction.$queryRaw<Array<{ id: string; rank: number; createdAt: Date }>>`
+      SELECT p."id", ${rankExpression} AS "rank", p."createdAt"
+      FROM "Post" p
+      WHERE p."status" = 'ACTIVE'
+        AND p."quantityAvailable" > 0
+        AND NOT EXISTS (
+          SELECT 1 FROM "AuctionRoom" ar WHERE ar."postId" = p."id"
+        )
+        ${cursorCondition}
+      ORDER BY "rank" ASC, p."createdAt" DESC, p."id" ASC
+      LIMIT ${requestedLimit + 1}
+      OFFSET ${offset}
+    `;
+    const selectedRows = rankedRows.slice(0, requestedLimit);
+    const ids = selectedRows.map(({ id }) => id);
+    const posts = ids.length ? await transaction.post.findMany({
+      where: { id: { in: ids } },
+      include: {
+        category: true,
+        images: { orderBy: { sortOrder: "asc" } },
+        user: { select: { id: true, displayName: true, avatarUrl: true, trustScore: true, completedAuctions: true, isCampusVerified: true } },
+        _count: { select: { comments: true, listingReactions: true } },
+        listingReactions: viewerId
+          ? { where: { userId: viewerId }, select: { type: true } }
+          : { take: 0, select: { type: true } },
+      },
+    }) : [];
+    const postsById = new Map(posts.map((post) => [post.id, post]));
+    return {
+      rankedRows,
+      listings: ids.flatMap((id) => {
+        const post = postsById.get(id);
+        return post ? [post] : [];
+      }),
+    };
+  }, { isolationLevel: "RepeatableRead" });
+  const hasMore = rankedRows.length > requestedLimit;
   const reactionCounts = await getListingReactionCounts(listings.map(({ id }) => id));
   response.json({
     items: listings.map((item) => ({
       ...item,
       reactionCounts: reactionCounts.get(item.id) ?? emptyListingReactionCounts(),
     })),
-    nextCursor: hasMore ? listings[listings.length - 1]?.id ?? null : null,
+    nextCursor: hasMore && rankedRows[requestedLimit - 1]
+      ? Buffer.from(JSON.stringify({
+        version: 1,
+        rank: rankedRows[requestedLimit - 1].rank === 1 ? 1 : 0,
+        createdAt: rankedRows[requestedLimit - 1].createdAt.toISOString(),
+        id: rankedRows[requestedLimit - 1].id,
+        seenHash,
+      } satisfies ProductFeedCursor)).toString("base64url")
+      : null,
   });
 });
 
