@@ -24,6 +24,20 @@ router.get("/notifications", async (request, response) => {
   response.json({ notifications: rows });
 });
 
+router.delete("/notifications/:notificationId", async (request, response) => {
+  const user = currentUser(request);
+  const result = await prisma.notification.deleteMany({
+    where: { id: request.params.notificationId, userId: user.id },
+  });
+
+  if (result.count === 0) {
+    response.status(404).json({ error: "Notification not found." });
+    return;
+  }
+
+  response.status(204).end();
+});
+
 router.post("/notifications/:notificationId/read", async (request, response) => {
   const user = currentUser(request);
   const notification = await prisma.notification.findUnique({
