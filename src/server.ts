@@ -13,6 +13,7 @@ import marketplaceRouter from "./routes/marketplace.js";
 import notificationsRouter from "./routes/notifications.js";
 import ordersRouter from "./routes/orders.js";
 import paymentsRouter from "./routes/payments.js";
+import passkeysRouter from "./routes/passkeys.js";
 import paystackWebhookRouter from "./routes/paystackWebhook.js";
 import sellerVerificationRouter from "./routes/sellerVerification.js";
 import scoutRouter from "./routes/scout.js";
@@ -98,6 +99,7 @@ app.use("/api", conversationsRouter);
 app.use("/api", scoutRouter);
 app.use("/api", cartRouter);
 app.use("/api", paymentsRouter);
+app.use("/api", passkeysRouter);
 app.use("/api", walletRouter);
 app.use("/api", auctionsRouter);
 app.use((request, response) => {

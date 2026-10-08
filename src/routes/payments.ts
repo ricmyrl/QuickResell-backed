@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import axios from "axios";
 import { Router } from "express";
-import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
+import { requireConfirmedEmail, requirePasskeyVerification, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
 import { usdToNgnKobo } from "../services/exchangeRates.js";
 import { getPaystackCallbackUrl, getPaystackSecretKey, verifyPaystackTransaction } from "../services/paystack.js";
@@ -11,7 +11,7 @@ const router = Router();
 
 router.use("/payments", requireSupabaseUser, requireConfirmedEmail);
 
-router.post("/payments/initialize", async (request, response) => {
+router.post("/payments/initialize", requirePasskeyVerification, async (request, response) => {
   const buyer = (request as AuthenticatedRequest).marketplaceUser;
   if (!buyer) {
     response.status(401).json({ error: "Unauthorized." });

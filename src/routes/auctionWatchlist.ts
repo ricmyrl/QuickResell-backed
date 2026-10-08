@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import type { AuctionWatchlistItem, User } from "../generated/prisma/client.js";
-import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
+import { requireConfirmedEmail, requirePasskeyVerification, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
 import { processAuctionAutoBid } from "../services/autoBidding.js";
 import { maxAllowedBid } from "../services/bidLogic.js";
@@ -54,8 +54,13 @@ router.get("/watchlist/auctions", async (request, response) => {
   response.json({ items: await Promise.all(items.map(includeAuction)) });
 });
 
-router.put("/watchlist/auctions/:auctionRoomId", async (request, response) => {
+router.put("/watchlist/auctions/:auctionRoomId", requirePasskeyVerification, async (request, response) => {
   const user = currentUser(request);
+  const auctionRoomId = request.params.auctionRoomId;
+  if (typeof auctionRoomId !== "string") {
+    response.status(400).json({ error: "A valid auction room ID is required." });
+    return;
+  }
   const {
     maxBid,
     bidStep,
@@ -117,7 +122,7 @@ router.put("/watchlist/auctions/:auctionRoomId", async (request, response) => {
   }
 
   const auctionRoom = await prisma.auctionRoom.findUnique({
-    where: { id: request.params.auctionRoomId },
+    where: { id: auctionRoomId },
     select: { id: true, sellerId: true, status: true, endsAt: true, currentHighestBid: true, post: { select: { price: true } } },
   });
   if (!auctionRoom) {

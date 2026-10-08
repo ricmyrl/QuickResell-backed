@@ -2,7 +2,7 @@ import { Router, type Request } from "express";
 import { createHash } from "node:crypto";
 import type { User } from "../generated/prisma/client.js";
 import { ListingReactionType, Prisma } from "../generated/prisma/client.js";
-import { optionalSupabaseUser, requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
+import { optionalSupabaseUser, requireConfirmedEmail, requirePasskeyVerification, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
 import { createNotificationsForUsers } from "../lib/notifications.js";
 import { createMarketplaceScorer, type MarketplaceFeedType } from "../../servies/marketRecomendationService.js";
@@ -528,7 +528,7 @@ router.delete("/watchlist/:listingId", async (request, response) => {
   response.json({ removed: removed.count });
 });
 
-router.post("/listings", async (request, response) => {
+router.post("/listings", requirePasskeyVerification, async (request, response) => {
   const seller = currentUser(request);
   const verification = await prisma.sellerVerification.findUnique({
     where: { userId: seller.id },

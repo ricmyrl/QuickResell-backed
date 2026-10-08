@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import type { Post, User } from "../generated/prisma/client.js";
-import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
+import { requireConfirmedEmail, requirePasskeyVerification, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
 import { CartPaymentError, finalizeCartCheckout } from "../services/cartCheckout.js";
 
@@ -78,7 +78,7 @@ router.get("/cart", async (request, response) => {
 });
 
 router.use("/cart/items", requireConfirmedEmail);
-router.post("/cart/items", async (request, response) => {
+router.post("/cart/items", requirePasskeyVerification, async (request, response) => {
   const buyer = currentUser(request);
   const { postId, quantity = 1 } = request.body ?? {};
   if (typeof postId !== "string" || !postId.trim() || !validQuantity(quantity)) {

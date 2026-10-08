@@ -126,4 +126,29 @@ export function requireConfirmedEmail(
   next();
 }
 
+export async function requirePasskeyVerification(
+  request: Request,
+  response: Response,
+  next: NextFunction,
+): Promise<void> {
+  const user = (request as AuthenticatedRequest).marketplaceUser;
+  if (!user) {
+    response.status(401).json({ error: "Authentication is required." });
+    return;
+  }
+  const now = new Date();
+  const consumed = await prisma.user.updateMany({
+    where: { id: user.id, passkeyVerifiedUntil: { gt: now } },
+    data: { passkeyVerifiedUntil: null },
+  });
+  if (consumed.count !== 1) {
+    response.status(403).json({
+      error: "Verify with your passkey before completing this action.",
+      code: "PASSKEY_VERIFICATION_REQUIRED",
+    });
+    return;
+  }
+  next();
+}
+
 export type { AuthenticatedRequest };

@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import type { AuctionRoom, Bid, Prisma, User } from "../generated/prisma/client.js";
-import { optionalSupabaseUser, requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
+import { optionalSupabaseUser, requireConfirmedEmail, requirePasskeyVerification, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
 import { notifyAuctionResolution, notifyBidActivity } from "../lib/notifications.js";
 import { sendAuctionWonEmail } from "../services/mail.js";
@@ -419,8 +419,13 @@ router.get("/auctions/:auctionRoomId", optionalSupabaseUser, async (request, res
 });
 
 router.use("/auctions/:auctionRoomId/bids", requireSupabaseUser, requireConfirmedEmail);
-router.post("/auctions/:auctionRoomId/bids", async (request, response) => {
+router.post("/auctions/:auctionRoomId/bids", requirePasskeyVerification, async (request, response) => {
   const bidder = currentUser(request);
+  const auctionRoomId = request.params.auctionRoomId;
+  if (typeof auctionRoomId !== "string") {
+    response.status(400).json({ error: "A valid auction room ID is required." });
+    return;
+  }
   const amount = request.body?.amount;
   if (!isValidManualBidAmount(amount)) {
     response.status(400).json({ error: "amount must be a finite number greater than zero and within the allowed bid limit." });
@@ -439,7 +444,7 @@ router.post("/auctions/:auctionRoomId/bids", async (request, response) => {
         status: 403 as const,
       };
     }
-    const room = await lockAuctionRoom(transaction, request.params.auctionRoomId);
+    const room = await lockAuctionRoom(transaction, auctionRoomId);
     if (!room) return { error: "Auction room not found.", status: 404 as const };
     if (room.sellerId === bidder.id) {
       return { error: "Sellers cannot bid in their own auction.", status: 403 as const };
