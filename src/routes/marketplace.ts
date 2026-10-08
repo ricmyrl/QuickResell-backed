@@ -68,6 +68,26 @@ router.get("/categories", async (_request, response) => {
 
 router.get("/store", optionalSupabaseUser, async (request, response) => {
   const viewerId = (request as AuthenticatedRequest).marketplaceUser?.id;
+  const requestedLimit = Number(request.query.limit ?? 50);
+  if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 50) {
+    response.status(400).json({ error: "limit must be an integer between 1 and 50." });
+    return;
+  }
+  const cursorId = request.query.cursor;
+  if (cursorId !== undefined && typeof cursorId !== "string") {
+    response.status(400).json({ error: "cursor must be a listing ID." });
+    return;
+  }
+  if (typeof cursorId === "string") {
+    const cursorExists = await prisma.post.findUnique({
+      where: { id: cursorId },
+      select: { id: true },
+    });
+    if (!cursorExists) {
+      response.status(400).json({ error: "cursor does not match a product listing." });
+      return;
+    }
+  }
   const items = await prisma.post.findMany({
     where: {
       status: "ACTIVE",
@@ -75,7 +95,8 @@ router.get("/store", optionalSupabaseUser, async (request, response) => {
       auctionRoom: { is: null },
     },
     orderBy: [{ createdAt: "desc" }, { id: "asc" }],
-    take: 50,
+    ...(typeof cursorId === "string" ? { cursor: { id: cursorId }, skip: 1 } : {}),
+    take: requestedLimit + 1,
     include: {
       category: true,
       images: { orderBy: { sortOrder: "asc" } },
@@ -86,12 +107,15 @@ router.get("/store", optionalSupabaseUser, async (request, response) => {
         : { take: 0, select: { type: true } },
     },
   });
-  const reactionCounts = await getListingReactionCounts(items.map(({ id }) => id));
+  const hasMore = items.length > requestedLimit;
+  const listings = hasMore ? items.slice(0, requestedLimit) : items;
+  const reactionCounts = await getListingReactionCounts(listings.map(({ id }) => id));
   response.json({
-    items: items.map((item) => ({
+    items: listings.map((item) => ({
       ...item,
       reactionCounts: reactionCounts.get(item.id) ?? emptyListingReactionCounts(),
     })),
+    nextCursor: hasMore ? listings[listings.length - 1]?.id ?? null : null,
   });
 });
 

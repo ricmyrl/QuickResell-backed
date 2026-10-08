@@ -319,8 +319,6 @@ router.get("/auctions", optionalSupabaseUser, async (request, response) => {
       where: {
         id: cursorId,
         isPublic: true,
-        status: "ACTIVE",
-        endsAt: { gt: new Date() },
       },
       select: { id: true },
     });
