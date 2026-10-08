@@ -66,6 +66,11 @@ function currentUser(request: Request): User {
   return user;
 }
 
+function hideReservePrice<T extends { reservePrice: number | null }>(room: T) {
+  const { reservePrice, ...publicRoom } = room;
+  return { ...publicRoom, noReserve: reservePrice === null || reservePrice <= 0 };
+}
+
 async function lockAuctionRoom(
   transaction: Prisma.TransactionClient,
   auctionRoomId: string,
@@ -355,7 +360,7 @@ router.get("/auctions", optionalSupabaseUser, async (request, response) => {
   );
   response.json({
     auctionRooms: auctionRooms.map((room) => ({
-      ...room,
+      ...hideReservePrice(room),
       post: room.post ? {
         ...room.post,
         reactionCounts: reactionCounts.get(room.post.id) ?? emptyListingReactionCounts(),
@@ -409,7 +414,7 @@ router.get("/auctions/:auctionRoomId", optionalSupabaseUser, async (request, res
     : emptyListingReactionCounts();
   response.json({
     auctionRoom: {
-      ...auctionRoom,
+      ...(viewerId === auctionRoom.sellerId ? auctionRoom : hideReservePrice(auctionRoom)),
       post: auctionRoom.post ? { ...auctionRoom.post, reactionCounts } : auctionRoom.post,
     },
   });
@@ -505,7 +510,11 @@ router.post("/auctions/:auctionRoomId/bids", async (request, response) => {
     });
   }
 
-  let automaticBid: Awaited<ReturnType<typeof processAuctionAutoBid>> = { auctionRoom: null, bid: null };
+  let automaticBid: Awaited<ReturnType<typeof processAuctionAutoBid>> = {
+    success: false,
+    auctionRoom: null,
+    bid: null,
+  };
   try {
     automaticBid = await processAuctionAutoBid(result.auctionRoom.id);
   } catch (error) {

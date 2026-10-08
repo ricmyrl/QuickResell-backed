@@ -25,6 +25,21 @@ enum AuctionRoomStatus {
   CLOSED
 }
 
+enum BidStrategy {
+  STANDARD
+  JUMP_BID
+  SNIPER
+  RESERVE_TARGET
+  ANALYST
+}
+
+enum IncrementCurveType {
+  LINEAR_TIERED
+  LOGARITHMIC
+  EXPONENTIAL
+  MARKET_SIGMOID
+}
+
 enum PurchaseOrderStatus {
   PENDING_HANDOFF
   COMPLETED
@@ -162,6 +177,7 @@ model Post {
   description    String?
   price          Float
   originalPrice  Float?
+  conditionScore Float          @default(1)
   locationCampus String?
   latitude       Float?
   longitude      Float?
@@ -298,6 +314,9 @@ model AuctionRoom {
   postId            String            @unique
   sellerId          String            @db.Uuid
   currentHighestBid Float
+  incrementCurve    IncrementCurveType @default(LINEAR_TIERED)
+  curveAlphaParam   Float?             @default(5.0)
+  curveGammaParam   Float?             @default(0.0015)
   highestBidderId   String?           @db.Uuid
   isPublic          Boolean           @default(false)
   reservePrice      Float?
@@ -327,6 +346,7 @@ model Bid {
   auctionRoomId String
   bidderId      String      @db.Uuid
   amount        Float
+  strategyMetadata Json?
   createdAt     DateTime    @default(now())
   auctionRoom   AuctionRoom @relation(fields: [auctionRoomId], references: [id], onDelete: Cascade)
   bidder        User        @relation(fields: [bidderId], references: [id], onDelete: Cascade)
@@ -370,6 +390,10 @@ model AuctionWatchlistItem {
   auctionRoomId  String
   maxBid         Float
   bidStep        Float       @default(1)
+  strategy       BidStrategy @default(STANDARD)
+  jumpMultiplier Float       @default(2)
+  sniperWindowSeconds Int    @default(120)
+  marginOfSafety Float       @default(0)
   autoBidEnabled Boolean     @default(false)
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
@@ -378,6 +402,7 @@ model AuctionWatchlistItem {
 
   @@unique([userId, auctionRoomId])
   @@index([autoBidEnabled, updatedAt])
+  @@index([autoBidEnabled, strategy])
 }
 
 model ScoutFeedback {
@@ -420,6 +445,7 @@ model PurchaseOrder {
 
   @@index([buyerId, createdAt])
   @@index([status, createdAt])
+  @@index([status, updatedAt])
 }
 
 model PurchaseOrderItem {

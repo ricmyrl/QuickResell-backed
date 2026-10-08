@@ -3,7 +3,8 @@ import type { AuctionWatchlistItem, User } from "../generated/prisma/client.js";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
 import { processAuctionAutoBid } from "../services/autoBidding.js";
-import { maxAllowedBid, minimumBidAmount } from "../services/bidLogic.js";
+import { maxAllowedBid } from "../services/bidLogic.js";
+import { bidStrategies, type BidStrategy } from "../services/bidStrategyEngine.js";
 import { sendScoutWatchlistEmail } from "../services/mail.js";
 
 const router = Router();
@@ -37,7 +38,9 @@ async function includeAuction(item: AuctionWatchlistItem) {
       },
     },
   });
-  return { ...item, auctionRoom };
+  if (!auctionRoom || item.userId === auctionRoom.sellerId) return { ...item, auctionRoom };
+  const { reservePrice, ...publicAuctionRoom } = auctionRoom;
+  return { ...item, auctionRoom: { ...publicAuctionRoom, noReserve: reservePrice === null || reservePrice <= 0 } };
 }
 
 router.use("/watchlist/auctions", requireSupabaseUser, requireConfirmedEmail);
@@ -53,7 +56,32 @@ router.get("/watchlist/auctions", async (request, response) => {
 
 router.put("/watchlist/auctions/:auctionRoomId", async (request, response) => {
   const user = currentUser(request);
-  const { maxBid, bidStep, autoBidEnabled, authorizationConfirmed } = request.body ?? {};
+  const {
+    maxBid,
+    bidStep,
+    autoBidEnabled,
+    authorizationConfirmed,
+    strategy = "STANDARD",
+    jumpMultiplier = 2,
+    sniperWindowSeconds = 120,
+    marginOfSafety = 0,
+  } = request.body ?? {};
+  if (typeof strategy !== "string" || !bidStrategies.includes(strategy as BidStrategy)) {
+    response.status(400).json({ error: "strategy must be one of the supported automated bidding strategies." });
+    return;
+  }
+  if (typeof jumpMultiplier !== "number" || !Number.isFinite(jumpMultiplier) || jumpMultiplier < 1.5 || jumpMultiplier > 5) {
+    response.status(400).json({ error: "jumpMultiplier must be between 1.5 and 5." });
+    return;
+  }
+  if (!Number.isInteger(sniperWindowSeconds) || sniperWindowSeconds < 1 || sniperWindowSeconds > 3600) {
+    response.status(400).json({ error: "sniperWindowSeconds must be an integer between 1 and 3600." });
+    return;
+  }
+  if (typeof marginOfSafety !== "number" || !Number.isFinite(marginOfSafety) || marginOfSafety < 0 || marginOfSafety > 1) {
+    response.status(400).json({ error: "marginOfSafety must be between 0 and 1." });
+    return;
+  }
   if (typeof maxBid !== "number" || !Number.isFinite(maxBid) || maxBid <= 0 || maxBid > maxAllowedBid) {
     response.status(400).json({ error: `maxBid must be a number greater than zero and at most ${maxAllowedBid}.` });
     return;
@@ -104,16 +132,28 @@ router.put("/watchlist/auctions/:auctionRoomId", async (request, response) => {
     response.status(409).json({ error: "Only live auctions can have an active bid rule." });
     return;
   }
-  const minimumBid = minimumBidAmount(auctionRoom.currentHighestBid, auctionRoom.post.price);
-  if (autoBidEnabled && maxBid < minimumBid) {
-    response.status(409).json({ error: `Your maximum must be at least ${minimumBid} to enable Scout bidding.` });
-    return;
-  }
-
   const item = await prisma.auctionWatchlistItem.upsert({
     where: { userId_auctionRoomId: { userId: user.id, auctionRoomId: auctionRoom.id } },
-    update: { maxBid, bidStep, autoBidEnabled },
-    create: { userId: user.id, auctionRoomId: auctionRoom.id, maxBid, bidStep, autoBidEnabled },
+    update: {
+      maxBid,
+      bidStep,
+      autoBidEnabled,
+      strategy: strategy as BidStrategy,
+      jumpMultiplier,
+      sniperWindowSeconds,
+      marginOfSafety,
+    },
+    create: {
+      userId: user.id,
+      auctionRoomId: auctionRoom.id,
+      maxBid,
+      bidStep,
+      autoBidEnabled,
+      strategy: strategy as BidStrategy,
+      jumpMultiplier,
+      sniperWindowSeconds,
+      marginOfSafety,
+    },
   });
 
   const emailNotified = user.email && autoBidEnabled
@@ -124,7 +164,7 @@ router.put("/watchlist/auctions/:auctionRoomId", async (request, response) => {
         select: { post: { select: { title: true } } },
       }))?.post.title ?? "your watched item" : "your watched item",
       maxBid,
-      bidStep,
+      strategy,
       note: `Scout is now watching this auction and will bid on your behalf up to ${maxBid}. Review the rule in the Watchlist anytime.`,
     })
     : false;

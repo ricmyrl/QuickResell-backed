@@ -166,13 +166,13 @@ export async function sendScoutWatchlistEmail({
   recipientEmail,
   itemTitle,
   maxBid,
-  bidStep,
+  strategy,
   note,
 }: {
   recipientEmail: string;
   itemTitle: string;
   maxBid: number;
-  bidStep: number;
+  strategy: string;
   note: string;
 }): Promise<boolean> {
   const clientConfig = getMailgunClient();
@@ -180,7 +180,8 @@ export async function sendScoutWatchlistEmail({
 
   const cleanTitle = itemTitle.trim().replace(/\s+/g, " ").slice(0, 120) || "your watched item";
   const subject = `Scout watchlist update: ${cleanTitle}`;
-  const text = `Scout has updated your watchlist for "${cleanTitle}". Max bid: ${formatCurrency(maxBid)}. Bid step: ${formatCurrency(bidStep)}. ${note}`;
+  const strategyLabel = strategy.toLowerCase().replaceAll("_", " ");
+  const text = `Scout has updated your watchlist for "${cleanTitle}". Max bid: ${formatCurrency(maxBid)}. Strategy: ${strategyLabel}. ${note}`;
 
   try {
     await clientConfig.client.messages.create(clientConfig.domain, {
@@ -193,7 +194,7 @@ export async function sendScoutWatchlistEmail({
           <h2 style="margin:0 0 12px; color:#203c32;">Scout watchlist update</h2>
           <p style="margin:0 0 12px;"><strong>Item:</strong> ${escapeHtml(cleanTitle)}</p>
           <p style="margin:0 0 12px;"><strong>Max bid:</strong> ${escapeHtml(formatCurrency(maxBid))}</p>
-          <p style="margin:0 0 12px;"><strong>Bid step:</strong> ${escapeHtml(formatCurrency(bidStep))}</p>
+          <p style="margin:0 0 12px;"><strong>Strategy:</strong> ${escapeHtml(strategyLabel)}</p>
           <p style="margin:0;">${escapeHtml(note)}</p>
         </div>
       `,
@@ -204,7 +205,7 @@ export async function sendScoutWatchlistEmail({
       recipientEmail,
       itemTitle,
       maxBid,
-      bidStep,
+      strategy,
       note,
       error,
     });

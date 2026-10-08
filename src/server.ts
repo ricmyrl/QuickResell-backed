@@ -18,6 +18,7 @@ import sellerVerificationRouter from "./routes/sellerVerification.js";
 import scoutRouter from "./routes/scout.js";
 import walletRouter from "./routes/wallet.js";
 import { getPaystackSecretKey } from "./services/paystack.js";
+import { processDueSniperBids } from "./services/autoBidding.js";
 
 const requiredEnvironment = ["SUPABASE_URL"];
 if (!process.env.DATABASE_URL && !process.env.DIRECT_URL) {
@@ -108,12 +109,12 @@ app.use((request, response) => {
   });
 });
 
-void Promise.all([finalizeExpiredAuctions(), finalizeUnpaidAuctionWins()]).catch((error: unknown) => {
-  console.error("Failed to finalize auction timers during startup.", error);
+void Promise.all([finalizeExpiredAuctions(), finalizeUnpaidAuctionWins(), processDueSniperBids()]).catch((error: unknown) => {
+  console.error("Failed to run auction maintenance workers during startup.", error);
 });
 const auctionFinalizationTimer = setInterval(() => {
-  void Promise.all([finalizeExpiredAuctions(), finalizeUnpaidAuctionWins()]).catch((error: unknown) => {
-    console.error("Failed to finalize auction timers.", error);
+  void Promise.all([finalizeExpiredAuctions(), finalizeUnpaidAuctionWins(), processDueSniperBids()]).catch((error: unknown) => {
+    console.error("Failed to run auction maintenance workers.", error);
   });
 }, 5_000);
 

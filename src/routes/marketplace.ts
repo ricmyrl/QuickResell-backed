@@ -7,6 +7,7 @@ import { createNotificationsForUsers } from "../lib/notifications.js";
 import { createMarketplaceScorer, type MarketplaceFeedType } from "../../servies/marketRecomendationService.js";
 import { emptyListingReactionCounts, getListingReactionCounts } from "../services/listingReactions.js";
 import { maxAllowedBid } from "../services/bidLogic.js";
+import { incrementCurveTypes, type IncrementCurveType } from "../services/bidDynamicIncrements.js";
 import { canPublishListings } from "../services/sellerVerification.js";
 
 const router = Router();
@@ -419,7 +420,21 @@ router.post("/listings", async (request, response) => {
     });
     return;
   }
-  const { title, description, categoryId, price, originalPrice, locationCampus, latitude, longitude, imageUrls, quantityAvailable = 1, auctionDurationHours } = request.body ?? {};
+  const {
+    title,
+    description,
+    categoryId,
+    price,
+    originalPrice,
+    conditionScore = 1,
+    locationCampus,
+    latitude,
+    longitude,
+    imageUrls,
+    quantityAvailable = 1,
+    auctionDurationHours,
+    incrementCurve = "LINEAR_TIERED",
+  } = request.body ?? {};
 
   if (typeof title !== "string" || !title.trim() || title.trim().length > 120) {
     response.status(400).json({ error: "title is required and must be at most 120 characters." });
@@ -433,6 +448,10 @@ router.post("/listings", async (request, response) => {
     response.status(400).json({ error: "price must be a non-negative number." });
     return;
   }
+  if (typeof conditionScore !== "number" || !Number.isFinite(conditionScore) || conditionScore <= 0.1 || conditionScore > 1) {
+    response.status(400).json({ error: "conditionScore must be greater than 0.1 and at most 1." });
+    return;
+  }
   if (typeof quantityAvailable !== "number" || !Number.isInteger(quantityAvailable) || quantityAvailable < 1 || quantityAvailable > 1000) {
     response.status(400).json({ error: "quantityAvailable must be an integer between 1 and 1000." });
     return;
@@ -440,6 +459,11 @@ router.post("/listings", async (request, response) => {
   if (auctionDurationHours !== undefined &&
       (typeof auctionDurationHours !== "number" || !Number.isInteger(auctionDurationHours) || auctionDurationHours < 1 || auctionDurationHours > maxAuctionDurationHours)) {
     response.status(400).json({ error: `auctionDurationHours must be an integer between 1 and ${maxAuctionDurationHours}.` });
+    return;
+  }
+  if (auctionDurationHours !== undefined &&
+      (typeof incrementCurve !== "string" || !incrementCurveTypes.includes(incrementCurve as IncrementCurveType))) {
+    response.status(400).json({ error: "incrementCurve must be one of the supported auction increment curves." });
     return;
   }
   if (auctionDurationHours !== undefined && price >= maxAllowedBid) {
@@ -491,6 +515,7 @@ router.post("/listings", async (request, response) => {
         title: title.trim(),
         description: typeof description === "string" ? description.trim() || null : null,
         price,
+        conditionScore,
         quantityAvailable,
         originalPrice: originalPrice ?? null,
         locationCampus: typeof locationCampus === "string" ? locationCampus.trim() || null : null,
@@ -513,6 +538,7 @@ router.post("/listings", async (request, response) => {
         currentHighestBid: price,
         endsAt: new Date(Date.now() + auctionDurationHours * 60 * 60 * 1000),
         isPublic: true,
+        incrementCurve: incrementCurve as IncrementCurveType,
       },
     });
     return { listing, auctionRoom };
@@ -542,11 +568,17 @@ router.put("/listings/:listingId", async (request, response) => {
 
   const nextPrice = request.body?.price;
   const nextOriginalPrice = request.body?.originalPrice;
+  const nextConditionScore = request.body?.conditionScore;
   const nextLatitude = request.body?.latitude;
   const nextLongitude = request.body?.longitude;
   const isUpdatingCoordinates = nextLatitude !== undefined || nextLongitude !== undefined;
   if (nextPrice !== undefined && (typeof nextPrice !== "number" || !Number.isFinite(nextPrice) || nextPrice < 0)) {
     response.status(400).json({ error: "price must be a non-negative number." });
+    return;
+  }
+  if (nextConditionScore !== undefined &&
+      (typeof nextConditionScore !== "number" || !Number.isFinite(nextConditionScore) || nextConditionScore <= 0.1 || nextConditionScore > 1)) {
+    response.status(400).json({ error: "conditionScore must be greater than 0.1 and at most 1." });
     return;
   }
   if (nextOriginalPrice !== undefined && nextOriginalPrice !== null &&
@@ -565,6 +597,7 @@ router.put("/listings/:listingId", async (request, response) => {
     where: { id: listing.id },
     data: {
       ...(nextPrice !== undefined ? { price: nextPrice } : {}),
+      ...(nextConditionScore !== undefined ? { conditionScore: nextConditionScore } : {}),
       ...(nextOriginalPrice !== undefined ? { originalPrice: nextOriginalPrice ?? null } : {}),
       ...(isUpdatingCoordinates ? {
         latitude: Number(nextLatitude.toFixed(3)),
