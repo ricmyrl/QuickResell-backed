@@ -6,6 +6,7 @@ import { notifyAuctionResolution, notifyBidActivity } from "../lib/notifications
 import { sendAuctionWonEmail } from "../services/mail.js";
 import { processAuctionAutoBid } from "../services/autoBidding.js";
 import { isValidManualBidAmount, minimumBidAmount } from "../services/bidLogic.js";
+import { feeForAcceptedBid } from "../services/auctionPlatformFee.js";
 import { auctionPaymentWindowMs, buyerBidSuspensionMonths, buyerDefaultPenaltyPoints } from "../services/auctionPaymentPolicy.js";
 import { emptyListingReactionCounts, getListingReactionCounts } from "../services/listingReactions.js";
 
@@ -472,13 +473,23 @@ router.post("/auctions/:auctionRoomId/bids", requirePasskeyVerification, async (
     const endsAt = shouldExtend
       ? new Date(room.endsAt.getTime() + antiSnipeExtensionMs)
       : room.endsAt;
+    const previousBid = await transaction.bid.findFirst({
+      where: { auctionRoomId: room.id },
+      orderBy: { sequence: "desc" },
+      select: { sequence: true },
+    });
+    const sequence = (previousBid?.sequence ?? 0) + 1;
+    const bidReferenceAmount = Math.max(room.currentHighestBid, listing.price);
+    const incrementAmountCents = Math.round((amount - bidReferenceAmount + Number.EPSILON) * 100);
+    const feeCents = room.platformFeeEnabled ? feeForAcceptedBid(sequence, incrementAmountCents) : 0;
     const bid = await transaction.bid.create({
-      data: { auctionRoomId: room.id, bidderId: bidder.id, amount },
+      data: { auctionRoomId: room.id, bidderId: bidder.id, sequence, amount, incrementAmountCents },
     });
     const auctionRoom = await transaction.auctionRoom.update({
       where: { id: room.id },
       data: {
         currentHighestBid: amount,
+        platformFeeCents: room.platformFeeCents + feeCents,
         highestBidderId: bidder.id,
         endsAt,
       },

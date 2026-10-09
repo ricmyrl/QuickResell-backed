@@ -1,6 +1,7 @@
 import { Prisma, type AuctionRoom, type Bid, type BidStrategy as PrismaBidStrategy } from "../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
 import { calculateDynamicBidIncrement } from "./bidDynamicIncrements.js";
+import { feeForAcceptedBid } from "./auctionPlatformFee.js";
 import {
   evaluateAnalystStrategy,
   evaluateJumpBidStrategy,
@@ -201,8 +202,8 @@ export async function processAuctionAutoBid(
 
       const previousBid = await tx.bid.findFirst({
         where: { auctionRoomId },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        select: { bidderId: true, strategyMetadata: true },
+        orderBy: { sequence: "desc" },
+        select: { sequence: true, bidderId: true, strategyMetadata: true },
       });
       const strategyRoom: StrategyRoom = {
         currentHighestBid: room.currentHighestBid,
@@ -334,11 +335,16 @@ export async function processAuctionAutoBid(
       if (amount <= room.currentHighestBid) {
         return { success: true, reason: "EQUILIBRIUM_REACHED" as const, auctionRoom: room, bid: null };
       }
+      const sequence = (previousBid?.sequence ?? 0) + 1;
+      const incrementAmountCents = Math.round((amount - room.currentHighestBid + Number.EPSILON) * 100);
+      const feeCents = room.platformFeeEnabled ? feeForAcceptedBid(sequence, incrementAmountCents) : 0;
       const bid = await tx.bid.create({
         data: {
           auctionRoomId,
           bidderId: selected.rule.userId,
+          sequence,
           amount,
+          incrementAmountCents,
           strategyMetadata: {
             ...(selected.evaluation.metadata ?? { strategy: selected.rule.strategy }),
             incrementCurve: increment.curveUsed,
@@ -364,7 +370,12 @@ export async function processAuctionAutoBid(
         : room.endsAt;
       const updatedRoom = await tx.auctionRoom.update({
         where: { id: auctionRoomId },
-        data: { currentHighestBid: amount, highestBidderId: selected.rule.userId, endsAt: updatedEndsAt },
+        data: {
+          currentHighestBid: amount,
+          platformFeeCents: room.platformFeeCents + feeCents,
+          highestBidderId: selected.rule.userId,
+          endsAt: updatedEndsAt,
+        },
       });
 
       await tx.cartItem.upsert({

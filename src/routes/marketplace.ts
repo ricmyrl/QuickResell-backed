@@ -657,6 +657,7 @@ router.post("/listings", requirePasskeyVerification, async (request, response) =
         postId: listing.id,
         sellerId: seller.id,
         currentHighestBid: price,
+        platformFeeEnabled: true,
         endsAt: new Date(Date.now() + auctionDurationHours * 60 * 60 * 1000),
         isPublic: true,
         incrementCurve: incrementCurve as IncrementCurveType,

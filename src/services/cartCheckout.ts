@@ -98,7 +98,7 @@ export async function finalizeCartCheckout(reference: string, buyerId: string) {
       throw new CartPaymentError("Your cart changed after payment started. Contact support with your payment reference.", 409);
     }
 
-    const purchaseLines: Array<{ post: Post; quantity: number; unitPriceCents: number; isAuction: boolean }> = [];
+    const purchaseLines: Array<{ post: Post; quantity: number; unitPriceCents: number; sellerFeeCents: number; isAuction: boolean }> = [];
     for (const item of cartItems) {
       if (!payableCartItemIds.has(item.id)) continue;
       const locked = await transaction.$queryRaw<Array<{ id: string }>>`
@@ -114,6 +114,7 @@ export async function finalizeCartCheckout(reference: string, buyerId: string) {
               status: true,
               highestBidderId: true,
               currentHighestBid: true,
+              platformFeeCents: true,
               paymentDueAt: true,
               paymentGraceUntil: true,
             },
@@ -144,7 +145,17 @@ export async function finalizeCartCheckout(reference: string, buyerId: string) {
       if (!Number.isSafeInteger(unitPriceCents) || unitPriceCents < 0) {
         throw new CartPaymentError(`“${post.title}” has an invalid asking price. Contact support with your payment reference.`, 409);
       }
-      purchaseLines.push({ post, quantity: item.quantity, unitPriceCents, isAuction: Boolean(item.auctionRoomId) });
+      const sellerFeeCents = item.auctionRoomId ? post.auctionRoom?.platformFeeCents ?? 0 : 0;
+      if (!Number.isSafeInteger(sellerFeeCents) || sellerFeeCents < 0 || sellerFeeCents > unitPriceCents * item.quantity) {
+        throw new CartPaymentError(`“${post.title}” has an invalid seller fee. Contact support with your payment reference.`, 409);
+      }
+      purchaseLines.push({
+        post,
+        quantity: item.quantity,
+        unitPriceCents,
+        sellerFeeCents,
+        isAuction: Boolean(item.auctionRoomId),
+      });
     }
 
     if (purchaseLines.length === 0) return null;
@@ -159,12 +170,13 @@ export async function finalizeCartCheckout(reference: string, buyerId: string) {
         buyerId,
         paymentReference: reference,
         subtotalCents,
-        items: { create: purchaseLines.map(({ post, quantity, unitPriceCents }) => ({
+        items: { create: purchaseLines.map(({ post, quantity, unitPriceCents, sellerFeeCents }) => ({
           postId: post.id,
           sellerId: post.sellerId,
           title: post.title,
           quantity,
           unitPriceCents,
+          sellerFeeCents,
         })) },
       },
       include: { items: true },
@@ -211,7 +223,10 @@ export async function finalizeCartCheckout(reference: string, buyerId: string) {
     const payoutGroups = new Map<string, number>();
     for (const line of purchaseLines) {
       const sellerTotal = payoutGroups.get(line.post.sellerId) ?? 0;
-      payoutGroups.set(line.post.sellerId, sellerTotal + line.quantity * line.unitPriceCents);
+      payoutGroups.set(
+        line.post.sellerId,
+        sellerTotal + line.quantity * line.unitPriceCents - line.sellerFeeCents,
+      );
     }
 
     const payoutRate = await getExchangeRates();

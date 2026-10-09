@@ -278,6 +278,8 @@ Load the initial state from `GET /api/auctions/:auctionRoomId`, then treat Realt
 
 Run the additive migrations `20260930190000_add_shopping_cart_orders`, `20261003130000_add_order_fulfillment_tracking`, and `20261003150000_add_auction_cart_holds`, then regenerate Prisma before enabling these routes. `GET /api/store` returns in-stock, fixed-price listings that are not attached to an auction. Bidding automatically adds a locked auction hold to the bidder's cart. Outbid holds stay locked for rebidding and are removed when the auction resolves without that bidder; a hold unlocks only after the seller accepts the buyer's winning bid. Auction winners pay the accepted final bid through Paystack checkout. `POST /api/listings` accepts optional `quantityAvailable` (integer 1–1000), defaulting to one.
 
+For auctions created after this policy takes effect, every second accepted bid creates a seller platform fee equal to that bid's actual increase over the preceding bid (the first increase is measured from the listing's starting price). Each accepted bid counts once, including automated jump bids. The winner pays the displayed winning bid; the accumulated fee is deducted from the seller's payout, not added to the buyer's checkout. The fee is shown to bidders before they bid, to sellers before they accept the winning bid, and is recorded on the order item. Existing auctions are not charged this fee.
+
 All cart endpoints require the signed-in user's Supabase bearer token. Cart rows are stored per user in PostgreSQL; client-submitted prices are never trusted.
 
 | Method | Endpoint | Behavior |

@@ -348,6 +348,8 @@ model AuctionRoom {
   postId            String            @unique
   sellerId          String            @db.Uuid
   currentHighestBid Float
+  platformFeeCents  Int               @default(0)
+  platformFeeEnabled Boolean           @default(false)
   incrementCurve    IncrementCurveType @default(LINEAR_TIERED)
   curveAlphaParam   Float?             @default(5.0)
   curveGammaParam   Float?             @default(0.0015)
@@ -376,15 +378,18 @@ model AuctionRoom {
 }
 
 model Bid {
-  id            String      @id @default(cuid())
-  auctionRoomId String
-  bidderId      String      @db.Uuid
-  amount        Float
-  strategyMetadata Json?
-  createdAt     DateTime    @default(now())
-  auctionRoom   AuctionRoom @relation(fields: [auctionRoomId], references: [id], onDelete: Cascade)
-  bidder        User        @relation(fields: [bidderId], references: [id], onDelete: Cascade)
+  id                  String      @id @default(cuid())
+  auctionRoomId       String
+  bidderId            String      @db.Uuid
+  sequence            Int
+  amount              Float
+  incrementAmountCents Int
+  strategyMetadata    Json?
+  createdAt           DateTime    @default(now())
+  auctionRoom         AuctionRoom @relation(fields: [auctionRoomId], references: [id], onDelete: Cascade)
+  bidder              User        @relation(fields: [bidderId], references: [id], onDelete: Cascade)
 
+  @@unique([auctionRoomId, sequence])
   @@index([auctionRoomId, createdAt])
   @@index([bidderId, createdAt])
 }
@@ -490,6 +495,7 @@ model PurchaseOrderItem {
   title          String
   quantity       Int
   unitPriceCents Int
+  sellerFeeCents Int                 @default(0)
   fulfillmentStatus OrderItemFulfillmentStatus @default(PENDING_HANDOFF)
   fulfillmentMethod FulfillmentMethod?
   createdAt      DateTime      @default(now())
