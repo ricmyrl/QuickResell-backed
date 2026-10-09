@@ -67,6 +67,10 @@ router.use("/account", requireSupabaseUser);
 
 router.get("/account", async (request, response) => {
   const user = currentUser(request);
+  const payoutAccount = await prisma.sellerVerification.findUnique({
+    where: { userId: user.id },
+    select: { payoutStatus: true, bankName: true, bankAccountLast4: true },
+  });
   response.json({
     profile: {
       displayName: user.displayName,
@@ -74,6 +78,9 @@ router.get("/account", async (request, response) => {
       avatarUrl: user.avatarUrl,
       preferredDormOrCampus: user.preferredDormOrCampus,
       budgetPreference: user.budgetPreference,
+      payoutStatus: payoutAccount?.payoutStatus ?? "NOT_STARTED",
+      payoutBankName: payoutAccount?.bankName ?? null,
+      payoutAccountLast4: payoutAccount?.bankAccountLast4 ?? null,
     },
   });
 });
@@ -96,7 +103,7 @@ router.patch("/account", async (request, response) => {
     return;
   }
 
-  const profile = await prisma.user.update({
+  const [profile, payoutAccount] = await Promise.all([prisma.user.update({
     where: { id: user.id },
     data: {
       preferredDormOrCampus: preferredDormOrCampus.trim() || null,
@@ -110,8 +117,16 @@ router.patch("/account", async (request, response) => {
       preferredDormOrCampus: true,
       budgetPreference: true,
     },
-  });
-  response.json({ profile });
+  }), prisma.sellerVerification.findUnique({
+    where: { userId: user.id },
+    select: { payoutStatus: true, bankName: true, bankAccountLast4: true },
+  })]);
+  response.json({ profile: {
+    ...profile,
+    payoutStatus: payoutAccount?.payoutStatus ?? "NOT_STARTED",
+    payoutBankName: payoutAccount?.bankName ?? null,
+    payoutAccountLast4: payoutAccount?.bankAccountLast4 ?? null,
+  } });
 });
 
 router.delete("/account", async (request, response) => {
