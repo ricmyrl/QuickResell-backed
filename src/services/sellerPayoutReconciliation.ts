@@ -5,6 +5,7 @@ export type PayoutOrderItem = {
   quantity: number;
   unitPriceCents: number;
   sellerFeeCents: number;
+  fulfillmentStatus: string;
   seller: {
     displayName: string | null;
     sellerVerification: {
@@ -14,16 +15,16 @@ export type PayoutOrderItem = {
       paystackRecipientCode: string | null;
     } | null;
   };
+  sellerPayout: {
+    status: string;
+    transferReference: string | null;
+    amountKobo: number | null;
+  } | null;
   order: {
     id: string;
     paymentReference: string | null;
     status: string;
     createdAt: Date;
-    sellerPayouts: Array<{
-      sellerId: string;
-      status: string;
-      transferReference: string | null;
-    }>;
   };
 };
 
@@ -34,8 +35,8 @@ export type SellerPayoutReconciliationRow = {
   paymentReference: string;
   sellerId: string;
   sellerName: string;
-  itemCount: number;
   quantity: number;
+  fulfillmentStatus: string;
   grossUsdCents: number;
   sellerFeeUsdCents: number;
   netPayoutUsdCents: number;
@@ -48,19 +49,10 @@ export type SellerPayoutReconciliationRow = {
   action: string;
 };
 
-type PayoutGroup = {
-  row: SellerPayoutReconciliationRow;
-  hasInvalidAmounts: boolean;
-};
-
 export function buildSellerPayoutReconciliationRows(
   items: PayoutOrderItem[],
 ): SellerPayoutReconciliationRow[] {
-  const groups = new Map<string, PayoutGroup>();
-
-  for (const item of items) {
-    const key = `${item.order.id}:${item.sellerId}`;
-    const existing = groups.get(key);
+  return items.map((item) => {
     const grossCents = item.quantity * item.unitPriceCents;
     const validAmounts = Number.isSafeInteger(item.quantity)
       && item.quantity > 0
@@ -73,51 +65,33 @@ export function buildSellerPayoutReconciliationRows(
     const safeGrossCents = validAmounts ? grossCents : 0;
     const safeFeeCents = validAmounts ? item.sellerFeeCents : 0;
     const verification = item.seller.sellerVerification;
-    const payout = item.order.sellerPayouts.find((entry) => entry.sellerId === item.sellerId);
-
-    if (existing) {
-      existing.row.itemCount += 1;
-      existing.row.quantity += Number.isSafeInteger(item.quantity) && item.quantity > 0 ? item.quantity : 0;
-      existing.row.grossUsdCents += safeGrossCents;
-      existing.row.sellerFeeUsdCents += safeFeeCents;
-      existing.row.netPayoutUsdCents += safeGrossCents - safeFeeCents;
-      existing.hasInvalidAmounts ||= !validAmounts;
-      continue;
-    }
-
-    groups.set(key, {
-      row: {
-        orderId: item.order.id,
-        orderCreatedAt: item.order.createdAt.toISOString(),
-        orderStatus: item.order.status,
-        paymentReference: item.order.paymentReference ?? "",
-        sellerId: item.sellerId,
-        sellerName: item.seller.displayName ?? "",
-        itemCount: 1,
-        quantity: Number.isSafeInteger(item.quantity) && item.quantity > 0 ? item.quantity : 0,
-        grossUsdCents: safeGrossCents,
-        sellerFeeUsdCents: safeFeeCents,
-        netPayoutUsdCents: safeGrossCents - safeFeeCents,
-        payoutStatus: verification?.payoutStatus ?? "NOT_STARTED",
-        bankName: verification?.bankName ?? "",
-        bankAccountLast4: verification?.bankAccountLast4 ?? "",
-        paystackRecipientCode: verification?.paystackRecipientCode ?? "",
-        transferStatus: payout?.status ?? "NOT_TRACKED",
-        transferReference: payout?.transferReference ?? "",
-        action: "",
-      },
-      hasInvalidAmounts: !validAmounts,
-    });
-  }
-
-  return Array.from(groups.values(), ({ row, hasInvalidAmounts }) => {
+    const row: SellerPayoutReconciliationRow = {
+      orderId: item.order.id,
+      orderCreatedAt: item.order.createdAt.toISOString(),
+      orderStatus: item.order.status,
+      paymentReference: item.order.paymentReference ?? "",
+      sellerId: item.sellerId,
+      sellerName: item.seller.displayName ?? "",
+      quantity: Number.isSafeInteger(item.quantity) && item.quantity > 0 ? item.quantity : 0,
+      fulfillmentStatus: item.fulfillmentStatus,
+      grossUsdCents: safeGrossCents,
+      sellerFeeUsdCents: safeFeeCents,
+      netPayoutUsdCents: safeGrossCents - safeFeeCents,
+      payoutStatus: verification?.payoutStatus ?? "NOT_STARTED",
+      bankName: verification?.bankName ?? "",
+      bankAccountLast4: verification?.bankAccountLast4 ?? "",
+      paystackRecipientCode: verification?.paystackRecipientCode ?? "",
+      transferStatus: item.sellerPayout?.status ?? "NOT_TRACKED",
+      transferReference: item.sellerPayout?.transferReference ?? "",
+      action: "",
+    };
     row.action = row.orderStatus === "CANCELLED"
       ? "BLOCKED_CANCELLED_ORDER"
-      : hasInvalidAmounts
+      : !validAmounts
         ? "BLOCKED_INVALID_AMOUNT"
         : row.transferStatus === "SUCCESS"
           ? "PAYSTACK_TRANSFER_SUCCESS"
-          : row.transferStatus === "PROCESSING" || row.transferStatus === "PENDING"
+          : row.transferStatus === "PROCESSING"
             ? "WAIT_FOR_PAYSTACK_TRANSFER"
             : row.transferStatus === "FAILED" || row.transferStatus === "REVERSED" || row.transferStatus === "REVIEW_REQUIRED"
               ? "RECONCILE_WITH_PAYSTACK"
@@ -129,6 +103,10 @@ export function buildSellerPayoutReconciliationRows(
             ? "BLOCKED_PAYOUT_NOT_VERIFIED"
             : !row.paystackRecipientCode
               ? "BLOCKED_NO_PAYSTACK_RECIPIENT"
+              : row.transferStatus === "PENDING"
+              ? ["READY_FOR_PICKUP", "SHIPPED", "COMPLETED"].includes(row.fulfillmentStatus)
+                ? "AVAILABLE_TO_CASH_OUT"
+                : "WAIT_FOR_FULFILLMENT"
               : "RECONCILE_WITH_PAYSTACK_BEFORE_TRANSFER";
     return row;
   }).sort((left, right) =>
@@ -144,8 +122,8 @@ const columns: Array<keyof SellerPayoutReconciliationRow> = [
   "paymentReference",
   "sellerId",
   "sellerName",
-  "itemCount",
   "quantity",
+  "fulfillmentStatus",
   "grossUsdCents",
   "sellerFeeUsdCents",
   "netPayoutUsdCents",

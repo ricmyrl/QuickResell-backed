@@ -514,6 +514,7 @@ model PurchaseOrderItem {
   order             PurchaseOrder              @relation(fields: [orderId], references: [id], onDelete: Cascade)
   post              Post                       @relation(fields: [postId], references: [id], onDelete: Restrict)
   seller            User                       @relation(fields: [sellerId], references: [id], onDelete: Restrict)
+  sellerPayout      SellerPayout?
 
   @@index([sellerId, createdAt])
   @@index([postId])
@@ -522,6 +523,7 @@ model PurchaseOrderItem {
 model SellerPayout {
   id                String             @id @default(cuid())
   orderId           String
+  orderItemId       String?            @unique
   sellerId          String             @db.Uuid
   amountUsdCents    Int
   amountKobo        Int?
@@ -534,9 +536,9 @@ model SellerPayout {
   updatedAt         DateTime           @updatedAt
   completedAt       DateTime?
   order             PurchaseOrder      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderItem         PurchaseOrderItem? @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
   seller            User               @relation(fields: [sellerId], references: [id], onDelete: Cascade)
 
-  @@unique([orderId, sellerId])
   @@index([sellerId, status, createdAt])
   @@index([status, updatedAt])
 }

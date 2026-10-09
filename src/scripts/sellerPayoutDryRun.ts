@@ -46,6 +46,7 @@ try {
       quantity: true,
       unitPriceCents: true,
       sellerFeeCents: true,
+      fulfillmentStatus: true,
       seller: {
         select: {
           displayName: true,
@@ -59,19 +60,19 @@ try {
           },
         },
       },
+      sellerPayout: {
+        select: {
+          status: true,
+          transferReference: true,
+          amountKobo: true,
+        },
+      },
       order: {
         select: {
           id: true,
           paymentReference: true,
           status: true,
           createdAt: true,
-          sellerPayouts: {
-            select: {
-              sellerId: true,
-              status: true,
-              transferReference: true,
-            },
-          },
         },
       },
     },
@@ -81,8 +82,8 @@ try {
   console.log(sellerPayoutReconciliationCsv(rows));
   const requiresReconciliation = rows.filter((row) => row.action === "RECONCILE_WITH_PAYSTACK_BEFORE_TRANSFER").length;
   console.error(
-    `Dry run only: ${rows.length} seller/order rows; ${requiresReconciliation} require Paystack reconciliation. `
-    + "No transfer status is stored in QuickResell, so do not initiate transfers from this report alone.",
+    `Dry run only: ${rows.length} product-line rows; ${requiresReconciliation} require Paystack reconciliation. `
+    + "This report does not initiate transfers.",
   );
 } finally {
   await prisma.$disconnect();

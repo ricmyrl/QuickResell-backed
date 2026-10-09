@@ -12,6 +12,7 @@ function makeItem(options: {
   quantity?: number;
   unitPriceCents?: number;
   sellerFeeCents?: number;
+  fulfillmentStatus?: string;
   orderStatus?: string;
   payoutStatus?: string;
   recipientCode?: string | null;
@@ -26,6 +27,7 @@ function makeItem(options: {
     quantity: options.quantity ?? 2,
     unitPriceCents: options.unitPriceCents ?? 1_500,
     sellerFeeCents: options.sellerFeeCents ?? 200,
+    fulfillmentStatus: options.fulfillmentStatus ?? "PENDING_HANDOFF",
     seller: {
       displayName: options.sellerName ?? "Seller",
       sellerVerification: {
@@ -35,44 +37,58 @@ function makeItem(options: {
         paystackRecipientCode: options.recipientCode === undefined ? "RCP_123" : options.recipientCode,
       },
     },
+    sellerPayout: options.transferStatus ? {
+      status: options.transferStatus,
+      transferReference: options.transferReference ?? null,
+      amountKobo: 270_000,
+    } : null,
     order: {
       id: options.orderId ?? "order-1",
       paymentReference: "PAY_123",
       status: options.orderStatus ?? "COMPLETED",
       createdAt: new Date("2026-01-01T00:00:00.000Z"),
-      sellerPayouts: options.transferStatus ? [{
-        sellerId: "seller-1",
-        status: options.transferStatus,
-        transferReference: options.transferReference ?? null,
-      }] : [],
     },
   };
 }
 
-test("groups an order's items per seller and calculates the same net amount as checkout", () => {
-  const [row] = buildSellerPayoutReconciliationRows([
+test("reports product-line net amounts separately for individual cashout", () => {
+  const rows = buildSellerPayoutReconciliationRows([
     makeItem(),
     makeItem({ id: "item-2", quantity: 1, unitPriceCents: 500, sellerFeeCents: 0 }),
   ]);
 
-  assert.equal(row?.itemCount, 2);
-  assert.equal(row?.quantity, 3);
-  assert.equal(row?.grossUsdCents, 3_500);
-  assert.equal(row?.sellerFeeUsdCents, 200);
-  assert.equal(row?.netPayoutUsdCents, 3_300);
-  assert.equal(row?.transferStatus, "NOT_TRACKED");
-  assert.equal(row?.transferReference, "");
-  assert.equal(row?.action, "RECONCILE_WITH_PAYSTACK_BEFORE_TRANSFER");
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0]?.quantity, 2);
+  assert.equal(rows[0]?.grossUsdCents, 3_000);
+  assert.equal(rows[0]?.sellerFeeUsdCents, 200);
+  assert.equal(rows[0]?.netPayoutUsdCents, 2_800);
+  assert.equal(rows[0]?.transferStatus, "NOT_TRACKED");
+  assert.equal(rows[0]?.transferReference, "");
+  assert.equal(rows[0]?.action, "RECONCILE_WITH_PAYSTACK_BEFORE_TRANSFER");
+  assert.equal(rows[1]?.netPayoutUsdCents, 500);
+  assert.equal(rows[0]?.action, "RECONCILE_WITH_PAYSTACK_BEFORE_TRANSFER");
 });
 
 test("reports persisted Paystack transfer status and reference", () => {
   const [row] = buildSellerPayoutReconciliationRows([
-    makeItem({ transferStatus: "SUCCESS", transferReference: "QRSP_reference" }),
+    makeItem({ transferStatus: "SUCCESS", transferReference: "QRSP_reference", fulfillmentStatus: "SHIPPED" }),
   ]);
 
   assert.equal(row?.transferStatus, "SUCCESS");
   assert.equal(row?.transferReference, "QRSP_reference");
   assert.equal(row?.action, "PAYSTACK_TRANSFER_SUCCESS");
+});
+
+test("marks a paid, fulfilled product line available to cash out only after fulfillment", () => {
+  const [ready] = buildSellerPayoutReconciliationRows([
+    makeItem({ transferStatus: "PENDING", fulfillmentStatus: "READY_FOR_PICKUP" }),
+  ]);
+  const [notReady] = buildSellerPayoutReconciliationRows([
+    makeItem({ transferStatus: "PENDING", fulfillmentStatus: "PENDING_HANDOFF" }),
+  ]);
+
+  assert.equal(ready?.action, "AVAILABLE_TO_CASH_OUT");
+  assert.equal(notReady?.action, "WAIT_FOR_FULFILLMENT");
 });
 
 test("blocks cancelled orders, invalid amounts, and unverified or missing recipients", () => {

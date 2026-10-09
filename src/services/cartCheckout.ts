@@ -3,7 +3,7 @@ import type { Post } from "../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
 import { verifyPaystackTransaction } from "./paystack.js";
 import { isAuctionPaymentOnTime } from "./auctionPaymentPolicy.js";
-import { getSellerPayoutNotification, processPendingSellerPayouts } from "./sellerPayouts.js";
+import { getSellerPayoutNotification } from "./sellerPayouts.js";
 
 export class CartPaymentError extends Error {
   constructor(message: string, readonly status: number) {
@@ -183,25 +183,29 @@ export async function finalizeCartCheckout(reference: string, buyerId: string) {
       include: { items: true },
     });
 
-    const sellerPayoutGroups = new Map<string, number>();
-    for (const line of purchaseLines) {
-      const sellerTotal = sellerPayoutGroups.get(line.post.sellerId) ?? 0;
-      sellerPayoutGroups.set(
-        line.post.sellerId,
-        sellerTotal + line.quantity * line.unitPriceCents - line.sellerFeeCents,
-      );
-    }
     const payoutRows = [];
-    for (const [sellerId, amountUsdCents] of sellerPayoutGroups) {
-      const verification = await transaction.sellerVerification.findUnique({
-        where: { userId: sellerId },
-        select: {
-          payoutStatus: true,
-          bankAccountNumber: true,
-          bankAccountName: true,
-          paystackRecipientCode: true,
-        },
-      });
+    const sellerVerifications = new Map<string, {
+      payoutStatus: string;
+      bankAccountNumber: string | null;
+      bankAccountName: string | null;
+      paystackRecipientCode: string | null;
+    } | null>();
+    for (const orderItem of createdOrder.items) {
+      const line = purchaseLines.find((purchaseLine) => purchaseLine.post.id === orderItem.postId);
+      if (!line) throw new Error("A created order item could not be matched to its checkout line.");
+      if (!sellerVerifications.has(orderItem.sellerId)) {
+        sellerVerifications.set(orderItem.sellerId, await transaction.sellerVerification.findUnique({
+          where: { userId: orderItem.sellerId },
+          select: {
+            payoutStatus: true,
+            bankAccountNumber: true,
+            bankAccountName: true,
+            paystackRecipientCode: true,
+          },
+        }));
+      }
+      const verification = sellerVerifications.get(orderItem.sellerId);
+      const amountUsdCents = orderItem.quantity * orderItem.unitPriceCents - orderItem.sellerFeeCents;
       const eligible = verification?.payoutStatus === "VERIFIED"
         && Boolean(verification.bankAccountNumber)
         && Boolean(verification.bankAccountName)
@@ -209,10 +213,11 @@ export async function finalizeCartCheckout(reference: string, buyerId: string) {
         && amountUsdCents > 0;
       payoutRows.push({
         orderId: createdOrder.id,
-        sellerId,
+        orderItemId: orderItem.id,
+        sellerId: orderItem.sellerId,
         amountUsdCents,
         recipientCode: eligible ? verification.paystackRecipientCode : null,
-        transferReference: eligible ? `QRSP_${randomUUID().replaceAll("-", "")}` : null,
+        transferReference: `QRSP_${randomUUID().replaceAll("-", "")}`,
         status: eligible ? "PENDING" as const : "BLOCKED" as const,
         failureReason: eligible
           ? null
@@ -283,12 +288,5 @@ export async function finalizeCartCheckout(reference: string, buyerId: string) {
     return createdOrder;
   });
 
-  if (order) {
-    try {
-      await processPendingSellerPayouts(order.id);
-    } catch (error) {
-      console.error("Seller payouts remain pending after order finalization.", { orderId: order.id, error });
-    }
-  }
   return order;
 }

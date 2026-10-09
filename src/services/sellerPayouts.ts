@@ -4,6 +4,13 @@ import { convertUsdToPayoutKobo, initiateSellerPayout } from "./paystack.js";
 
 export type PayoutNotificationStatus = "BLOCKED" | "SUCCESS" | "FAILED" | "REVERSED" | "REVIEW_REQUIRED";
 
+export class SellerCashoutError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "SellerCashoutError";
+  }
+}
+
 export function getSellerPayoutNotification(
   status: PayoutNotificationStatus,
   amountKobo: number | null,
@@ -54,8 +61,16 @@ async function updatePayoutStatus(
       where: { id: payoutId },
       select: { id: true, orderId: true, sellerId: true, amountKobo: true, status: true },
     });
-    if (!payout || payout.status === status) return false;
-    if (payout.status === "SUCCESS" || payout.status === "REVERSED") return false;
+    if (!payout) return false;
+    if (payout.status === status) {
+      await transaction.sellerPayout.updateMany({
+        where: { id: payout.id, status },
+        data,
+      });
+      return false;
+    }
+    if (payout.status === "FAILED" || payout.status === "REVERSED"
+      || (payout.status === "SUCCESS" && status !== "REVERSED")) return false;
 
     const updated = await transaction.sellerPayout.updateMany({
       where: { id: payout.id, status: payout.status },
@@ -84,73 +99,125 @@ async function updatePayoutStatus(
   });
 }
 
-export async function processPendingSellerPayouts(orderId: string): Promise<void> {
-  const payouts = await prisma.sellerPayout.findMany({
-    where: { orderId, status: "PENDING" },
-    orderBy: { createdAt: "asc" },
+export async function cashOutSellerOrderItem(itemId: string, sellerId: string) {
+  const item = await prisma.purchaseOrderItem.findFirst({
+    where: { id: itemId, sellerId },
+    include: {
+      order: { select: { id: true, paymentReference: true, status: true } },
+      sellerPayout: true,
+    },
   });
-  if (payouts.length === 0) return;
+  if (!item) throw new SellerCashoutError("Order item not found.", 404);
+  if (!item.order.paymentReference) {
+    throw new SellerCashoutError("The buyer's payment must be confirmed before cashing out.", 409);
+  }
+  if (item.order.status === "CANCELLED") {
+    throw new SellerCashoutError("A cancelled order cannot be cashed out.", 409);
+  }
+  if (!["READY_FOR_PICKUP", "SHIPPED", "COMPLETED"].includes(item.fulfillmentStatus)) {
+    throw new SellerCashoutError("Mark this item pickup-ready or shipped before cashing out.", 409);
+  }
+  if (!item.sellerPayout) {
+    throw new SellerCashoutError("This older order has no tracked payout record. Check Paystack before requesting any payment.", 409);
+  }
+
+  const verification = await prisma.sellerVerification.findUnique({
+    where: { userId: sellerId },
+    select: {
+      payoutStatus: true,
+      bankAccountNumber: true,
+      bankAccountName: true,
+      paystackRecipientCode: true,
+    },
+  });
+  if (verification?.payoutStatus !== "VERIFIED"
+    || !verification.bankAccountNumber
+    || !verification.bankAccountName
+    || !verification.paystackRecipientCode) {
+    throw new SellerCashoutError("Verify your payout bank account before cashing out.", 409);
+  }
+
+  let payout = item.sellerPayout;
+  if (payout.status === "BLOCKED") {
+    if (payout.amountUsdCents <= 0) {
+      throw new SellerCashoutError("This item has no positive seller proceeds to cash out.", 409);
+    }
+    const updated = await prisma.sellerPayout.updateMany({
+      where: { id: payout.id, status: "BLOCKED" },
+      data: {
+        status: "PENDING",
+        recipientCode: verification.paystackRecipientCode,
+        failureReason: null,
+      },
+    });
+    if (updated.count !== 1) {
+      throw new SellerCashoutError("The payout status changed. Refresh your sales and try again.", 409);
+    }
+    payout = { ...payout, status: "PENDING", recipientCode: verification.paystackRecipientCode };
+  }
+  if (payout.status !== "PENDING") {
+    throw new SellerCashoutError(
+      payout.status === "SUCCESS"
+        ? "This item has already been paid out."
+        : payout.status === "PROCESSING"
+          ? "This payout is already processing."
+          : "This payout needs reconciliation. Contact support before trying again.",
+      409,
+    );
+  }
+  if (!payout.recipientCode || !payout.transferReference) {
+    throw new SellerCashoutError("A verified Paystack recipient is required before cashing out.", 409);
+  }
 
   const payoutRate = await getExchangeRates();
-  for (const payout of payouts) {
-    if (!payout.recipientCode || payout.amountUsdCents <= 0 || !payout.transferReference) {
-      await updatePayoutStatus(payout.id, "BLOCKED", { failureReason: "PAYOUT_DETAILS_OR_AMOUNT_INVALID" });
-      continue;
-    }
-
-    const amountKobo = convertUsdToPayoutKobo(payout.amountUsdCents / 100, payoutRate.rates.NGN);
-    if (!Number.isSafeInteger(amountKobo) || amountKobo <= 0) {
-      await updatePayoutStatus(payout.id, "BLOCKED", { failureReason: "CONVERTED_PAYOUT_AMOUNT_INVALID" });
-      continue;
-    }
-
-    const claimed = await prisma.sellerPayout.updateMany({
-      where: { id: payout.id, status: "PENDING" },
-      data: { status: "PROCESSING", amountKobo, failureReason: null },
-    });
-    if (claimed.count !== 1) continue;
-
-    try {
-      const transfer = await initiateSellerPayout({
-        amountKobo,
-        recipientCode: payout.recipientCode,
-        reference: payout.transferReference,
-        reason: `QuickResell seller payout for order ${orderId}`,
-      });
-      const status = statusFromPaystack(transfer.status);
-      await updatePayoutStatus(payout.id, status, {
-        amountKobo,
-        transferCode: transfer.transfer_code ?? null,
-        failureReason: status === "FAILED" ? "PAYSTACK_TRANSFER_FAILED" : null,
-      });
-    } catch (error) {
-      await updatePayoutStatus(payout.id, "REVIEW_REQUIRED", {
-        amountKobo,
-        failureReason: "PAYSTACK_RESULT_REQUIRES_RECONCILIATION",
-      });
-      console.error("Seller payout result requires manual Paystack reconciliation.", {
-        sellerId: payout.sellerId,
-        orderId,
-        transferReference: payout.transferReference,
-        error,
-      });
-    }
+  const amountKobo = convertUsdToPayoutKobo(payout.amountUsdCents / 100, payoutRate.rates.NGN);
+  if (!Number.isSafeInteger(amountKobo) || amountKobo <= 0) {
+    throw new SellerCashoutError("The payout amount could not be calculated safely.", 409);
   }
-}
 
-export async function processAllPendingSellerPayouts(): Promise<void> {
-  const orders = await prisma.sellerPayout.findMany({
-    where: { status: "PENDING" },
-    distinct: ["orderId"],
-    select: { orderId: true },
+  const claimed = await prisma.sellerPayout.updateMany({
+    where: { id: payout.id, status: "PENDING" },
+    data: {
+      status: "PROCESSING",
+      amountKobo,
+      recipientCode: verification.paystackRecipientCode,
+      failureReason: null,
+    },
   });
-  for (const { orderId } of orders) {
-    try {
-      await processPendingSellerPayouts(orderId);
-    } catch (error) {
-      console.error("Pending seller payouts could not be processed.", { orderId, error });
-    }
+  if (claimed.count !== 1) {
+    throw new SellerCashoutError("This payout was already claimed. Refresh its status before trying again.", 409);
   }
+
+  try {
+    const transfer = await initiateSellerPayout({
+      amountKobo,
+      recipientCode: verification.paystackRecipientCode,
+      reference: payout.transferReference,
+      reason: `QuickResell seller payout for order ${item.order.id}`,
+    });
+    await updatePayoutStatus(payout.id, statusFromPaystack(transfer.status), {
+      amountKobo,
+      transferCode: transfer.transfer_code ?? null,
+      failureReason: transfer.status === "failed" ? "PAYSTACK_TRANSFER_FAILED" : null,
+    });
+  } catch (error) {
+    await updatePayoutStatus(payout.id, "REVIEW_REQUIRED", {
+      amountKobo,
+      failureReason: "PAYSTACK_RESULT_REQUIRES_RECONCILIATION",
+    });
+    console.error("Seller cashout result requires manual Paystack reconciliation.", {
+      sellerId,
+      orderId: item.order.id,
+      orderItemId: item.id,
+      transferReference: payout.transferReference,
+      error,
+    });
+  }
+
+  return prisma.sellerPayout.findUniqueOrThrow({
+    where: { id: payout.id },
+    select: { id: true, status: true, amountKobo: true, updatedAt: true, completedAt: true },
+  });
 }
 
 export async function applyPaystackTransferEvent(
