@@ -1,6 +1,7 @@
 import express, { Router } from "express";
 import { CartPaymentError, finalizeCartCheckout } from "../services/cartCheckout.js";
 import { getPaystackSecretKey, verifyPaystackWebhookSignature } from "../services/paystack.js";
+import { applyPaystackTransferEvent } from "../services/sellerPayouts.js";
 import { finalizeWalletTopUp, WalletPaymentError } from "../services/walletPayments.js";
 
 const router = Router();
@@ -27,6 +28,7 @@ router.post("/paystack/webhook", express.raw({ type: "application/json", limit: 
     data?: {
       status?: unknown
       reference?: unknown
+      transfer_code?: unknown
       metadata?: Record<string, unknown>
     }
   }
@@ -34,6 +36,39 @@ router.post("/paystack/webhook", express.raw({ type: "application/json", limit: 
     event = JSON.parse(rawBody.toString("utf8")) as typeof event;
   } catch {
     response.status(400).json({ error: "Invalid Paystack webhook payload." });
+    return;
+  }
+
+  const transferEvents = [
+    "transfer.success",
+    "transfer.failed",
+    "transfer.reversed",
+    "transfer.queued",
+    "transfer.processing",
+  ] as const;
+  if (typeof event.event === "string" && transferEvents.includes(event.event as typeof transferEvents[number])) {
+    const reference = event.data?.reference;
+    const transferCode = event.data?.transfer_code;
+    if (typeof reference !== "string" || !reference.trim()) {
+      console.error("Paystack transfer event did not include a reference.", { event: event.event });
+      response.status(200).json({ received: true, requiresReview: true });
+      return;
+    }
+    try {
+      const updated = await applyPaystackTransferEvent(
+        reference,
+        event.event as typeof transferEvents[number],
+        typeof transferCode === "string" ? transferCode : undefined,
+      );
+      if (!updated) {
+        console.error("Paystack transfer event did not match a QuickResell payout.", { reference, event: event.event });
+      }
+    } catch (error) {
+      console.error("Paystack transfer event could not be recorded.", { reference, event: event.event, error });
+      response.status(500).json({ error: "Transfer status update will be retried." });
+      return;
+    }
+    response.status(200).json({ received: true });
     return;
   }
 

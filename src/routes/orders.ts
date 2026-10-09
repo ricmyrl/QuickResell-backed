@@ -103,6 +103,10 @@ router.get("/seller/orders", async (request, response) => {
           createdAt: true,
           paymentReference: true,
           buyer: { select: { displayName: true } },
+          sellerPayouts: {
+            where: { sellerId: seller.id },
+            select: { status: true, amountKobo: true, updatedAt: true },
+          },
         },
       },
     },
@@ -111,6 +115,7 @@ router.get("/seller/orders", async (request, response) => {
     items: items.map(({ order, ...item }) => ({
       ...item,
       order: { id: order.id, createdAt: order.createdAt, buyer: order.buyer },
+      sellerPayout: order.sellerPayouts[0] ?? null,
       paymentStatus: order.paymentReference ? "PAID" : "UNPAID",
     })),
   });
@@ -171,11 +176,23 @@ router.post("/seller/orders/:itemId/fulfillment", requireConfirmedEmail, async (
             id: true,
             createdAt: true,
             buyer: { select: { displayName: true } },
+            sellerPayouts: {
+              where: { sellerId: seller.id },
+              select: { status: true, amountKobo: true, updatedAt: true },
+            },
           },
         },
       },
     });
-    return { item: { ...updatedItem, paymentStatus: "PAID" as const } };
+    const { sellerPayouts, ...orderDetails } = updatedItem.order;
+    return {
+      item: {
+        ...updatedItem,
+        order: orderDetails,
+        sellerPayout: sellerPayouts[0] ?? null,
+        paymentStatus: "PAID" as const,
+      },
+    };
   });
 
   if ("error" in result) {

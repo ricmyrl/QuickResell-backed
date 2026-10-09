@@ -20,6 +20,7 @@ import scoutRouter from "./routes/scout.js";
 import walletRouter from "./routes/wallet.js";
 import { getPaystackSecretKey } from "./services/paystack.js";
 import { processDueSniperBids } from "./services/autoBidding.js";
+import { processAllPendingSellerPayouts } from "./services/sellerPayouts.js";
 
 const requiredEnvironment = ["SUPABASE_URL"];
 if (!process.env.DATABASE_URL && !process.env.DIRECT_URL) {
@@ -179,8 +180,18 @@ app.use((error: unknown, request: Request, response: Response, _next: NextFuncti
 const port = Number(process.env.PORT ?? 3000);
 const server = app.listen(port, () => console.log(`Quick Resell API listening on port ${port}`));
 
+void processAllPendingSellerPayouts().catch((error: unknown) => {
+  console.error("Failed to process pending seller payouts during startup.", error);
+});
+const sellerPayoutRetryTimer = setInterval(() => {
+  void processAllPendingSellerPayouts().catch((error: unknown) => {
+    console.error("Failed to process pending seller payouts.", error);
+  });
+}, 60_000);
+
 async function shutdown() {
   clearInterval(auctionFinalizationTimer);
+  clearInterval(sellerPayoutRetryTimer);
   server.close();
   await prisma.$disconnect();
 }

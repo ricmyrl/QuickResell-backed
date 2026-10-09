@@ -1,8 +1,9 @@
+import { randomUUID } from "node:crypto";
 import type { Post } from "../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
-import { getExchangeRates } from "./exchangeRates.js";
-import { convertUsdToPayoutKobo, initiateSellerPayout, verifyPaystackTransaction } from "./paystack.js";
+import { verifyPaystackTransaction } from "./paystack.js";
 import { isAuctionPaymentOnTime } from "./auctionPaymentPolicy.js";
+import { processPendingSellerPayouts } from "./sellerPayouts.js";
 
 export class CartPaymentError extends Error {
   constructor(message: string, readonly status: number) {
@@ -72,7 +73,7 @@ function isAuctionCartItemAvailable(
 export async function finalizeCartCheckout(reference: string, buyerId: string) {
   const verifiedPayment = await verifyCartPayment(reference, buyerId);
 
-  return prisma.$transaction(async (transaction) => {
+  const order = await prisma.$transaction(async (transaction) => {
     await transaction.$queryRaw<Array<{ id: string }>>`
       SELECT "id" FROM "User" WHERE "id" = ${buyerId}::uuid FOR UPDATE
     `;
@@ -182,6 +183,50 @@ export async function finalizeCartCheckout(reference: string, buyerId: string) {
       include: { items: true },
     });
 
+    const sellerPayoutGroups = new Map<string, number>();
+    for (const line of purchaseLines) {
+      const sellerTotal = sellerPayoutGroups.get(line.post.sellerId) ?? 0;
+      sellerPayoutGroups.set(
+        line.post.sellerId,
+        sellerTotal + line.quantity * line.unitPriceCents - line.sellerFeeCents,
+      );
+    }
+    const payoutRows = [];
+    for (const [sellerId, amountUsdCents] of sellerPayoutGroups) {
+      const verification = await transaction.sellerVerification.findUnique({
+        where: { userId: sellerId },
+        select: {
+          payoutStatus: true,
+          bankAccountNumber: true,
+          bankAccountName: true,
+          paystackRecipientCode: true,
+        },
+      });
+      const eligible = verification?.payoutStatus === "VERIFIED"
+        && Boolean(verification.bankAccountNumber)
+        && Boolean(verification.bankAccountName)
+        && Boolean(verification.paystackRecipientCode)
+        && amountUsdCents > 0;
+      payoutRows.push({
+        orderId: createdOrder.id,
+        sellerId,
+        amountUsdCents,
+        recipientCode: eligible ? verification.paystackRecipientCode : null,
+        transferReference: eligible ? `QRSP_${randomUUID().replaceAll("-", "")}` : null,
+        status: eligible ? "PENDING" as const : "BLOCKED" as const,
+        failureReason: eligible
+          ? null
+          : amountUsdCents <= 0
+            ? "NON_POSITIVE_PAYOUT"
+            : verification?.payoutStatus !== "VERIFIED"
+              ? "PAYOUT_ACCOUNT_NOT_VERIFIED"
+              : !verification.bankAccountNumber || !verification.bankAccountName
+                ? "PAYOUT_ACCOUNT_DETAILS_MISSING"
+                : "PAYSTACK_RECIPIENT_MISSING",
+      });
+    }
+    await transaction.sellerPayout.createMany({ data: payoutRows });
+
     const sellerOrderLines = new Map<string, string[]>();
     for (const line of purchaseLines) {
       const titles = sellerOrderLines.get(line.post.sellerId) ?? [];
@@ -220,49 +265,15 @@ export async function finalizeCartCheckout(reference: string, buyerId: string) {
       where: { userId: buyerId, postId: { in: purchaseLines.map((line) => line.post.id) } },
     });
 
-    const payoutGroups = new Map<string, number>();
-    for (const line of purchaseLines) {
-      const sellerTotal = payoutGroups.get(line.post.sellerId) ?? 0;
-      payoutGroups.set(
-        line.post.sellerId,
-        sellerTotal + line.quantity * line.unitPriceCents - line.sellerFeeCents,
-      );
-    }
-
-    const payoutRate = await getExchangeRates();
-    for (const [sellerId, totalUsdCents] of payoutGroups) {
-      try {
-        const verification = await transaction.sellerVerification.findUnique({
-          where: { userId: sellerId },
-          select: {
-            payoutStatus: true,
-            bankAccountNumber: true,
-            bankAccountName: true,
-            paystackRecipientCode: true,
-          },
-        });
-
-        if (!verification || verification.payoutStatus !== "VERIFIED" || !verification.bankAccountNumber || !verification.bankAccountName || !verification.paystackRecipientCode) {
-          continue;
-        }
-
-        const payoutKobo = convertUsdToPayoutKobo(totalUsdCents / 100, payoutRate.rates.NGN);
-        if (payoutKobo <= 0) continue;
-
-        await initiateSellerPayout({
-          amountKobo: payoutKobo,
-          recipientCode: verification.paystackRecipientCode,
-          reason: `QuickResell seller payout for order ${createdOrder.id}`,
-        });
-      } catch (error) {
-        console.error("Seller payout could not be sent.", {
-          sellerId,
-          orderId: createdOrder.id,
-          error,
-        });
-      }
-    }
-
     return createdOrder;
   });
+
+  if (order) {
+    try {
+      await processPendingSellerPayouts(order.id);
+    } catch (error) {
+      console.error("Seller payouts remain pending after order finalization.", { orderId: order.id, error });
+    }
+  }
+  return order;
 }

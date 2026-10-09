@@ -91,6 +91,16 @@ enum WalletTransactionStatus {
   FAILED
 }
 
+enum SellerPayoutStatus {
+  BLOCKED
+  PENDING
+  PROCESSING
+  SUCCESS
+  FAILED
+  REVERSED
+  REVIEW_REQUIRED
+}
+
 enum SellerCheckStatus {
   NOT_STARTED
   PENDING
@@ -105,93 +115,94 @@ enum PasskeyChallengePurpose {
 }
 
 model User {
-  id                    String         @id @db.Uuid
-  email                 String?        @unique
-  displayName           String?
-  avatarUrl             String?
-  isCampusVerified      Boolean        @default(false)
-  preferredDormOrCampus String?
-  budgetPreference      Float?
-  trustScore            Float          @default(50.0)
-  completedAuctions     Int            @default(0)
-  backedOutAuctions     Int            @default(0)
-  biddingSuspendedUntil DateTime?
-  savedCategories       String[]       @default([])
-  embedding             Json?
-  createdAt             DateTime       @default(now())
-  updatedAt             DateTime       @updatedAt
-  passkeyVerifiedUntil  DateTime?
-  passkeys              PasskeyCredential[]
-  passkeyChallenges     PasskeyChallenge[]
-  posts                 Post[]
-  productComments      ProductComment[]
+  id                      String                   @id @db.Uuid
+  email                   String?                  @unique
+  displayName             String?
+  avatarUrl               String?
+  isCampusVerified        Boolean                  @default(false)
+  preferredDormOrCampus   String?
+  budgetPreference        Float?
+  trustScore              Float                    @default(50.0)
+  completedAuctions       Int                      @default(0)
+  backedOutAuctions       Int                      @default(0)
+  biddingSuspendedUntil   DateTime?
+  savedCategories         String[]                 @default([])
+  embedding               Json?
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+  passkeyVerifiedUntil    DateTime?
+  passkeys                PasskeyCredential[]
+  passkeyChallenges       PasskeyChallenge[]
+  posts                   Post[]
+  productComments         ProductComment[]
   productCommentReactions ProductCommentReaction[]
-  listingReactions     ListingReaction[]
-  buyerConversations    Conversation[] @relation("ConversationBuyer")
-  sellerConversations   Conversation[] @relation("ConversationSeller")
-  sentMessages          Message[]
-  notifications         Notification[]
-  sellerAuctionRooms    AuctionRoom[]  @relation("AuctionSeller")
-  wonAuctionRooms       AuctionRoom[]  @relation("AuctionWinner")
-  bids                  Bid[]
-  cartItems             CartItem[]
-  watchlistItems        WatchlistItem[]
-  auctionWatchlistItems AuctionWatchlistItem[]
-  scoutFeedback        ScoutFeedback[]
-  supportRequests      SupportRequest[]
-  purchaseOrders        PurchaseOrder[]
-  soldOrderItems         PurchaseOrderItem[]
-  wallet                Wallet?
-  sellerVerification   SellerVerification?
+  listingReactions        ListingReaction[]
+  buyerConversations      Conversation[]           @relation("ConversationBuyer")
+  sellerConversations     Conversation[]           @relation("ConversationSeller")
+  sentMessages            Message[]
+  notifications           Notification[]
+  sellerAuctionRooms      AuctionRoom[]            @relation("AuctionSeller")
+  wonAuctionRooms         AuctionRoom[]            @relation("AuctionWinner")
+  bids                    Bid[]
+  cartItems               CartItem[]
+  watchlistItems          WatchlistItem[]
+  auctionWatchlistItems   AuctionWatchlistItem[]
+  scoutFeedback           ScoutFeedback[]
+  supportRequests         SupportRequest[]
+  purchaseOrders          PurchaseOrder[]
+  soldOrderItems          PurchaseOrderItem[]
+  sellerPayouts           SellerPayout[]
+  wallet                  Wallet?
+  sellerVerification      SellerVerification?
 }
 
 model PasskeyCredential {
-  id           String   @id @default(cuid())
-  userId       String   @db.Uuid
-  credentialId String   @unique
+  id           String    @id @default(cuid())
+  userId       String    @db.Uuid
+  credentialId String    @unique
   publicKey    Bytes
-  counter      BigInt   @default(0)
-  transports   String[] @default([])
-  createdAt    DateTime @default(now())
+  counter      BigInt    @default(0)
+  transports   String[]  @default([])
+  createdAt    DateTime  @default(now())
   lastUsedAt   DateTime?
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
 }
 
 model PasskeyChallenge {
-  id        String                 @id @default(cuid())
-  userId    String                 @db.Uuid
-  challenge String                 @unique
+  id        String                  @id @default(cuid())
+  userId    String                  @db.Uuid
+  challenge String                  @unique
   purpose   PasskeyChallengePurpose
   expiresAt DateTime
-  createdAt DateTime               @default(now())
-  user      User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime                @default(now())
+  user      User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, purpose, expiresAt])
 }
 
 model SellerVerification {
-  id                   String            @id @default(cuid())
-  userId               String            @unique @db.Uuid
-  identityStatus       SellerCheckStatus @default(NOT_STARTED)
-  payoutStatus         SellerCheckStatus @default(NOT_STARTED)
-  identityReference    String?           @unique
-  identityJobId        String?           @unique
-  smileUserId          String?
-  verifiedNameHash     String?
-  bankCode             String?
-  bankName             String?
-  bankAccountNumber    String?
-  bankAccountName      String?
-  bankAccountLast4     String?
+  id                    String            @id @default(cuid())
+  userId                String            @unique @db.Uuid
+  identityStatus        SellerCheckStatus @default(NOT_STARTED)
+  payoutStatus          SellerCheckStatus @default(NOT_STARTED)
+  identityReference     String?           @unique
+  identityJobId         String?           @unique
+  smileUserId           String?
+  verifiedNameHash      String?
+  bankCode              String?
+  bankName              String?
+  bankAccountNumber     String?
+  bankAccountName       String?
+  bankAccountLast4      String?
   paystackRecipientCode String?
-  failureCode          String?
-  identityVerifiedAt   DateTime?
-  payoutVerifiedAt     DateTime?
-  createdAt            DateTime          @default(now())
-  updatedAt            DateTime          @updatedAt
-  user                 User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  failureCode           String?
+  identityVerifiedAt    DateTime?
+  payoutVerifiedAt      DateTime?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+  user                  User              @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([identityStatus, payoutStatus])
 }
@@ -204,32 +215,32 @@ model Category {
 }
 
 model Post {
-  id             String         @id @default(cuid())
-  sellerId       String         @db.Uuid
-  categoryId     String
-  title          String
-  description    String?
-  price          Float
-  originalPrice  Float?
-  conditionScore Float          @default(1)
-  locationCampus String?
-  latitude       Float?
-  longitude      Float?
-  embedding      Json?
-  status         ListingStatus  @default(ACTIVE)
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
-  user           User           @relation(fields: [sellerId], references: [id], onDelete: Cascade)
-  category       Category       @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  images         ListingImage[]
-  conversations  Conversation[]
-  auctionRoom    AuctionRoom?
-  quantityAvailable Int             @default(1)
-  cartItems      CartItem[]
-  watchlistItems WatchlistItem[]
+  id                 String              @id @default(cuid())
+  sellerId           String              @db.Uuid
+  categoryId         String
+  title              String
+  description        String?
+  price              Float
+  originalPrice      Float?
+  conditionScore     Float               @default(1)
+  locationCampus     String?
+  latitude           Float?
+  longitude          Float?
+  embedding          Json?
+  status             ListingStatus       @default(ACTIVE)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  user               User                @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  category           Category            @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  images             ListingImage[]
+  conversations      Conversation[]
+  auctionRoom        AuctionRoom?
+  quantityAvailable  Int                 @default(1)
+  cartItems          CartItem[]
+  watchlistItems     WatchlistItem[]
   purchaseOrderItems PurchaseOrderItem[]
-  comments       ProductComment[]
-  listingReactions ListingReaction[]
+  comments           ProductComment[]
+  listingReactions   ListingReaction[]
 
   @@index([status, createdAt])
   @@index([categoryId, status])
@@ -237,16 +248,16 @@ model Post {
 }
 
 model ProductComment {
-  id        String   @id @default(cuid())
+  id        String                   @id @default(cuid())
   postId    String
-  userId    String   @db.Uuid
+  userId    String                   @db.Uuid
   parentId  String?
-  content   String   @db.VarChar(1000)
-  createdAt DateTime @default(now())
-  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  parent    ProductComment? @relation("ProductCommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
-  replies   ProductComment[] @relation("ProductCommentReplies")
+  content   String                   @db.VarChar(1000)
+  createdAt DateTime                 @default(now())
+  post      Post                     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user      User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent    ProductComment?          @relation("ProductCommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies   ProductComment[]         @relation("ProductCommentReplies")
   reactions ProductCommentReaction[]
 
   @@index([postId, createdAt])
@@ -255,13 +266,13 @@ model ProductComment {
 }
 
 model ProductCommentReaction {
-  id        String   @id @default(cuid())
+  id        String         @id @default(cuid())
   commentId String
-  userId    String   @db.Uuid
-  type      String   @default("LIKE")
-  createdAt DateTime @default(now())
+  userId    String         @db.Uuid
+  type      String         @default("LIKE")
+  createdAt DateTime       @default(now())
   comment   ProductComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([commentId, userId])
   @@index([userId, createdAt])
@@ -328,48 +339,48 @@ model Message {
 }
 
 model Notification {
-  id            String           @id @default(cuid())
-  userId        String           @db.Uuid
-  type          NotificationType
-  title         String
-  message       String           @db.Text
-  entityType    String?
-  entityId      String?
-  isRead        Boolean          @default(false)
-  createdAt     DateTime         @default(now())
-  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id         String           @id @default(cuid())
+  userId     String           @db.Uuid
+  type       NotificationType
+  title      String
+  message    String           @db.Text
+  entityType String?
+  entityId   String?
+  isRead     Boolean          @default(false)
+  createdAt  DateTime         @default(now())
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, isRead, createdAt])
   @@index([entityType, entityId])
 }
 
 model AuctionRoom {
-  id                String            @id @default(cuid())
-  postId            String            @unique
-  sellerId          String            @db.Uuid
-  currentHighestBid Float
-  platformFeeCents  Int               @default(0)
-  platformFeeEnabled Boolean           @default(false)
-  incrementCurve    IncrementCurveType @default(LINEAR_TIERED)
-  curveAlphaParam   Float?             @default(5.0)
-  curveGammaParam   Float?             @default(0.0015)
-  highestBidderId   String?           @db.Uuid
-  isPublic          Boolean           @default(false)
-  reservePrice      Float?
-  paymentDueAt      DateTime?
-  paymentGraceUntil DateTime?
-  paymentGraceUsed  Boolean           @default(false)
-  buyerDefaultedAt  DateTime?
-  status            AuctionRoomStatus @default(ACTIVE)
-  endsAt            DateTime
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
-  post              Post              @relation(fields: [postId], references: [id], onDelete: Cascade)
-  seller            User              @relation("AuctionSeller", fields: [sellerId], references: [id], onDelete: Cascade)
-  highestBidder     User?             @relation("AuctionWinner", fields: [highestBidderId], references: [id], onDelete: SetNull)
-  bids              Bid[]
-  watchlistItems    AuctionWatchlistItem[]
-  cartItems         CartItem[]
+  id                 String                 @id @default(cuid())
+  postId             String                 @unique
+  sellerId           String                 @db.Uuid
+  currentHighestBid  Float
+  platformFeeCents   Int                    @default(0)
+  platformFeeEnabled Boolean                @default(false)
+  incrementCurve     IncrementCurveType     @default(LINEAR_TIERED)
+  curveAlphaParam    Float?                 @default(5.0)
+  curveGammaParam    Float?                 @default(0.0015)
+  highestBidderId    String?                @db.Uuid
+  isPublic           Boolean                @default(false)
+  reservePrice       Float?
+  paymentDueAt       DateTime?
+  paymentGraceUntil  DateTime?
+  paymentGraceUsed   Boolean                @default(false)
+  buyerDefaultedAt   DateTime?
+  status             AuctionRoomStatus      @default(ACTIVE)
+  endsAt             DateTime
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  post               Post                   @relation(fields: [postId], references: [id], onDelete: Cascade)
+  seller             User                   @relation("AuctionSeller", fields: [sellerId], references: [id], onDelete: Cascade)
+  highestBidder      User?                  @relation("AuctionWinner", fields: [highestBidderId], references: [id], onDelete: SetNull)
+  bids               Bid[]
+  watchlistItems     AuctionWatchlistItem[]
+  cartItems          CartItem[]
 
   @@index([status, endsAt])
   @@index([status, paymentDueAt])
@@ -378,16 +389,16 @@ model AuctionRoom {
 }
 
 model Bid {
-  id                  String      @id @default(cuid())
-  auctionRoomId       String
-  bidderId            String      @db.Uuid
-  sequence            Int
-  amount              Float
+  id                   String      @id @default(cuid())
+  auctionRoomId        String
+  bidderId             String      @db.Uuid
+  sequence             Int
+  amount               Float
   incrementAmountCents Int
-  strategyMetadata    Json?
-  createdAt           DateTime    @default(now())
-  auctionRoom         AuctionRoom @relation(fields: [auctionRoomId], references: [id], onDelete: Cascade)
-  bidder              User        @relation(fields: [bidderId], references: [id], onDelete: Cascade)
+  strategyMetadata     Json?
+  createdAt            DateTime    @default(now())
+  auctionRoom          AuctionRoom @relation(fields: [auctionRoomId], references: [id], onDelete: Cascade)
+  bidder               User        @relation(fields: [bidderId], references: [id], onDelete: Cascade)
 
   @@unique([auctionRoomId, sequence])
   @@index([auctionRoomId, createdAt])
@@ -395,15 +406,15 @@ model Bid {
 }
 
 model CartItem {
-  id            String      @id @default(cuid())
-  userId        String      @db.Uuid
+  id            String       @id @default(cuid())
+  userId        String       @db.Uuid
   postId        String
   auctionRoomId String?
-  quantity      Int         @default(1)
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
-  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  post          Post        @relation(fields: [postId], references: [id], onDelete: Cascade)
+  quantity      Int          @default(1)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  post          Post         @relation(fields: [postId], references: [id], onDelete: Cascade)
   auctionRoom   AuctionRoom? @relation(fields: [auctionRoomId], references: [id], onDelete: Cascade)
 
   @@unique([userId, postId])
@@ -424,20 +435,20 @@ model WatchlistItem {
 }
 
 model AuctionWatchlistItem {
-  id             String      @id @default(cuid())
-  userId         String      @db.Uuid
-  auctionRoomId  String
-  maxBid         Float
-  bidStep        Float       @default(1)
-  strategy       BidStrategy @default(STANDARD)
-  jumpMultiplier Float       @default(2)
-  sniperWindowSeconds Int    @default(120)
-  marginOfSafety Float       @default(0)
-  autoBidEnabled Boolean     @default(false)
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
-  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  auctionRoom    AuctionRoom @relation(fields: [auctionRoomId], references: [id], onDelete: Cascade)
+  id                  String      @id @default(cuid())
+  userId              String      @db.Uuid
+  auctionRoomId       String
+  maxBid              Float
+  bidStep             Float       @default(1)
+  strategy            BidStrategy @default(STANDARD)
+  jumpMultiplier      Float       @default(2)
+  sniperWindowSeconds Int         @default(120)
+  marginOfSafety      Float       @default(0)
+  autoBidEnabled      Boolean     @default(false)
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+  user                User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  auctionRoom         AuctionRoom @relation(fields: [auctionRoomId], references: [id], onDelete: Cascade)
 
   @@unique([userId, auctionRoomId])
   @@index([autoBidEnabled, updatedAt])
@@ -472,15 +483,16 @@ model SupportRequest {
 }
 
 model PurchaseOrder {
-  id               String               @id @default(cuid())
-  buyerId          String               @db.Uuid
-  paymentReference String?              @unique
-  status           PurchaseOrderStatus  @default(PENDING_HANDOFF)
+  id               String              @id @default(cuid())
+  buyerId          String              @db.Uuid
+  paymentReference String?             @unique
+  status           PurchaseOrderStatus @default(PENDING_HANDOFF)
   subtotalCents    Int
-  createdAt        DateTime             @default(now())
-  updatedAt        DateTime             @updatedAt
-  buyer            User                 @relation(fields: [buyerId], references: [id], onDelete: Restrict)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  buyer            User                @relation(fields: [buyerId], references: [id], onDelete: Restrict)
   items            PurchaseOrderItem[]
+  sellerPayouts    SellerPayout[]
 
   @@index([buyerId, createdAt])
   @@index([status, createdAt])
@@ -488,45 +500,67 @@ model PurchaseOrder {
 }
 
 model PurchaseOrderItem {
-  id             String        @id @default(cuid())
-  orderId        String
-  postId         String
-  sellerId       String        @db.Uuid
-  title          String
-  quantity       Int
-  unitPriceCents Int
-  sellerFeeCents Int                 @default(0)
+  id                String                     @id @default(cuid())
+  orderId           String
+  postId            String
+  sellerId          String                     @db.Uuid
+  title             String
+  quantity          Int
+  unitPriceCents    Int
+  sellerFeeCents    Int                        @default(0)
   fulfillmentStatus OrderItemFulfillmentStatus @default(PENDING_HANDOFF)
   fulfillmentMethod FulfillmentMethod?
-  createdAt      DateTime      @default(now())
-  order          PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  post           Post          @relation(fields: [postId], references: [id], onDelete: Restrict)
-  seller         User          @relation(fields: [sellerId], references: [id], onDelete: Restrict)
+  createdAt         DateTime                   @default(now())
+  order             PurchaseOrder              @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  post              Post                       @relation(fields: [postId], references: [id], onDelete: Restrict)
+  seller            User                       @relation(fields: [sellerId], references: [id], onDelete: Restrict)
 
   @@index([sellerId, createdAt])
   @@index([postId])
 }
 
+model SellerPayout {
+  id                String             @id @default(cuid())
+  orderId           String
+  sellerId          String             @db.Uuid
+  amountUsdCents    Int
+  amountKobo        Int?
+  recipientCode     String?
+  transferReference String?            @unique
+  transferCode      String?
+  status            SellerPayoutStatus @default(PENDING)
+  failureReason     String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  completedAt       DateTime?
+  order             PurchaseOrder      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  seller            User               @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+
+  @@unique([orderId, sellerId])
+  @@index([sellerId, status, createdAt])
+  @@index([status, updatedAt])
+}
+
 model Wallet {
-  id            String              @id @default(cuid())
-  userId        String              @unique @db.Uuid
-  balanceCents  Int                 @default(0)
-  createdAt     DateTime            @default(now())
-  updatedAt     DateTime            @updatedAt
-  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  transactions  WalletTransaction[]
+  id           String              @id @default(cuid())
+  userId       String              @unique @db.Uuid
+  balanceCents Int                 @default(0)
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions WalletTransaction[]
 }
 
 model WalletTransaction {
-  id                  String                  @id @default(cuid())
-  walletId            String
-  paymentReference    String                  @unique
-  amountCents         Int
-  paymentAmountKobo   Int
-  status              WalletTransactionStatus @default(PENDING)
-  createdAt           DateTime                @default(now())
-  updatedAt           DateTime                @updatedAt
-  wallet              Wallet                  @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  id                String                  @id @default(cuid())
+  walletId          String
+  paymentReference  String                  @unique
+  amountCents       Int
+  paymentAmountKobo Int
+  status            WalletTransactionStatus @default(PENDING)
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+  wallet            Wallet                  @relation(fields: [walletId], references: [id], onDelete: Cascade)
 
   @@index([walletId, status, createdAt])
 }

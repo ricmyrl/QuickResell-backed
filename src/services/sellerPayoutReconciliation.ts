@@ -19,6 +19,11 @@ export type PayoutOrderItem = {
     paymentReference: string | null;
     status: string;
     createdAt: Date;
+    sellerPayouts: Array<{
+      sellerId: string;
+      status: string;
+      transferReference: string | null;
+    }>;
   };
 };
 
@@ -38,7 +43,8 @@ export type SellerPayoutReconciliationRow = {
   bankName: string;
   bankAccountLast4: string;
   paystackRecipientCode: string;
-  transferStatus: "NOT_TRACKED";
+  transferStatus: string;
+  transferReference: string;
   action: string;
 };
 
@@ -67,6 +73,7 @@ export function buildSellerPayoutReconciliationRows(
     const safeGrossCents = validAmounts ? grossCents : 0;
     const safeFeeCents = validAmounts ? item.sellerFeeCents : 0;
     const verification = item.seller.sellerVerification;
+    const payout = item.order.sellerPayouts.find((entry) => entry.sellerId === item.sellerId);
 
     if (existing) {
       existing.row.itemCount += 1;
@@ -95,7 +102,8 @@ export function buildSellerPayoutReconciliationRows(
         bankName: verification?.bankName ?? "",
         bankAccountLast4: verification?.bankAccountLast4 ?? "",
         paystackRecipientCode: verification?.paystackRecipientCode ?? "",
-        transferStatus: "NOT_TRACKED",
+        transferStatus: payout?.status ?? "NOT_TRACKED",
+        transferReference: payout?.transferReference ?? "",
         action: "",
       },
       hasInvalidAmounts: !validAmounts,
@@ -107,6 +115,14 @@ export function buildSellerPayoutReconciliationRows(
       ? "BLOCKED_CANCELLED_ORDER"
       : hasInvalidAmounts
         ? "BLOCKED_INVALID_AMOUNT"
+        : row.transferStatus === "SUCCESS"
+          ? "PAYSTACK_TRANSFER_SUCCESS"
+          : row.transferStatus === "PROCESSING" || row.transferStatus === "PENDING"
+            ? "WAIT_FOR_PAYSTACK_TRANSFER"
+            : row.transferStatus === "FAILED" || row.transferStatus === "REVERSED" || row.transferStatus === "REVIEW_REQUIRED"
+              ? "RECONCILE_WITH_PAYSTACK"
+              : row.transferStatus === "BLOCKED"
+                ? "PAYOUT_BLOCKED"
         : row.netPayoutUsdCents <= 0
           ? "BLOCKED_NON_POSITIVE_PAYOUT"
           : row.payoutStatus !== "VERIFIED"
@@ -138,6 +154,7 @@ const columns: Array<keyof SellerPayoutReconciliationRow> = [
   "bankAccountLast4",
   "paystackRecipientCode",
   "transferStatus",
+  "transferReference",
   "action",
 ];
 

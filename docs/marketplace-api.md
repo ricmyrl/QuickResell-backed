@@ -40,9 +40,9 @@ npm run payouts:reconcile:dry-run > seller-payout-reconciliation.csv
 npm run payouts:reconcile:dry-run -- --since=2026-01-01 > seller-payout-reconciliation.csv
 ```
 
-The report groups paid-in-app order lines by order and seller, uses the stored line prices and seller fees to calculate the same net USD cents used by checkout, and shows only the bank name and last four digits. It never initiates a Paystack transfer. Rows with verified payout details are marked `RECONCILE_WITH_PAYSTACK_BEFORE_TRANSFER`, not as confirmed missed payouts.
+The report groups paid-in-app order lines by order and seller, uses the stored line prices and seller fees to calculate the same net USD cents used by checkout, and shows only the bank name and last four digits. It never initiates a Paystack transfer. New checkout payouts include their recorded Paystack status and reference; successful means Paystack reported transfer success, not independent confirmation from the receiving bank. Legacy orders without a ledger remain `NOT_TRACKED` and must be checked in Paystack.
 
-QuickResell currently does not persist Paystack transfer references or statuses. Therefore this report cannot tell whether a seller was already paid, whether the Paystack transaction was later refunded, or what historical FX rate was applied. Check each payment and transfer in Paystack and reconcile manually before sending any funds; do not use this report alone as an instruction to pay. Keep the generated CSV private because it contains seller/order and Paystack recipient identifiers.
+Apply pending schema migrations with `npm run db:migrate:deploy` when deploying the backend. Configure Paystack to send `transfer.success`, `transfer.failed`, and `transfer.reversed` webhooks to `/api/paystack/webhook`. New payouts are recorded before the transfer call and use a stable Paystack reference. Ambiguous transfer outcomes are marked for manual reconciliation rather than automatically retried, to avoid duplicate payments. Keep the generated CSV private because it contains seller/order and Paystack recipient identifiers.
 
 ## Vite/React Listing Creation
 

@@ -98,10 +98,12 @@ export async function createPaystackTransferRecipient({
 export async function initiateSellerPayout({
   amountKobo,
   recipientCode,
+  reference,
   reason,
 }: {
   amountKobo: number
   recipientCode: string
+  reference: string
   reason: string
 }): Promise<{ reference?: string; transfer_code?: string; status?: string }> {
   const response = await axios.post<{ data?: { reference?: string; transfer_code?: string; status?: string } }>(
@@ -111,6 +113,7 @@ export async function initiateSellerPayout({
       reason,
       amount: amountKobo,
       recipient: recipientCode,
+      reference,
     },
     {
       headers: {

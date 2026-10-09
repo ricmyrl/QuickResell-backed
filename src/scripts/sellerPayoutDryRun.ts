@@ -65,6 +65,13 @@ try {
           paymentReference: true,
           status: true,
           createdAt: true,
+          sellerPayouts: {
+            select: {
+              sellerId: true,
+              status: true,
+              transferReference: true,
+            },
+          },
         },
       },
     },

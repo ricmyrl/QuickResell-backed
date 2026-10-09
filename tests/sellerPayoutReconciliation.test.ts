@@ -16,6 +16,8 @@ function makeItem(options: {
   payoutStatus?: string;
   recipientCode?: string | null;
   sellerName?: string;
+  transferStatus?: string;
+  transferReference?: string | null;
 } = {}): PayoutOrderItem {
   return {
     id: options.id ?? "item-1",
@@ -38,6 +40,11 @@ function makeItem(options: {
       paymentReference: "PAY_123",
       status: options.orderStatus ?? "COMPLETED",
       createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      sellerPayouts: options.transferStatus ? [{
+        sellerId: "seller-1",
+        status: options.transferStatus,
+        transferReference: options.transferReference ?? null,
+      }] : [],
     },
   };
 }
@@ -54,7 +61,18 @@ test("groups an order's items per seller and calculates the same net amount as c
   assert.equal(row?.sellerFeeUsdCents, 200);
   assert.equal(row?.netPayoutUsdCents, 3_300);
   assert.equal(row?.transferStatus, "NOT_TRACKED");
+  assert.equal(row?.transferReference, "");
   assert.equal(row?.action, "RECONCILE_WITH_PAYSTACK_BEFORE_TRANSFER");
+});
+
+test("reports persisted Paystack transfer status and reference", () => {
+  const [row] = buildSellerPayoutReconciliationRows([
+    makeItem({ transferStatus: "SUCCESS", transferReference: "QRSP_reference" }),
+  ]);
+
+  assert.equal(row?.transferStatus, "SUCCESS");
+  assert.equal(row?.transferReference, "QRSP_reference");
+  assert.equal(row?.action, "PAYSTACK_TRANSFER_SUCCESS");
 });
 
 test("blocks cancelled orders, invalid amounts, and unverified or missing recipients", () => {
