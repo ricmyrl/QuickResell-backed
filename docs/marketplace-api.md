@@ -31,6 +31,19 @@ The backend must have `SUPABASE_SERVICE_ROLE_KEY` configured as a server-only se
 | `PATCH` | `/api/account` | Update `{ "preferredDormOrCampus": "...", "budgetPreference": 250 }`; budget may be `null`. |
 | `DELETE` | `/api/account` | Permanently remove linked marketplace records after `{ "confirmation": "account@email" }` matches the authenticated user's email. |
 
+## Seller Payout Reconciliation Dry Run
+
+Run the backend's local, read-only report before manually reviewing missed seller payouts:
+
+```sh
+npm run payouts:reconcile:dry-run > seller-payout-reconciliation.csv
+npm run payouts:reconcile:dry-run -- --since=2026-01-01 > seller-payout-reconciliation.csv
+```
+
+The report groups paid-in-app order lines by order and seller, uses the stored line prices and seller fees to calculate the same net USD cents used by checkout, and shows only the bank name and last four digits. It never initiates a Paystack transfer. Rows with verified payout details are marked `RECONCILE_WITH_PAYSTACK_BEFORE_TRANSFER`, not as confirmed missed payouts.
+
+QuickResell currently does not persist Paystack transfer references or statuses. Therefore this report cannot tell whether a seller was already paid, whether the Paystack transaction was later refunded, or what historical FX rate was applied. Check each payment and transfer in Paystack and reconcile manually before sending any funds; do not use this report alone as an instruction to pay. Keep the generated CSV private because it contains seller/order and Paystack recipient identifiers.
+
 ## Vite/React Listing Creation
 
 Configure the frontend Supabase client with the project URL and publishable/anon key. Start Google OAuth with:

@@ -1,0 +1,154 @@
+export type PayoutOrderItem = {
+  id: string;
+  orderId: string;
+  sellerId: string;
+  quantity: number;
+  unitPriceCents: number;
+  sellerFeeCents: number;
+  seller: {
+    displayName: string | null;
+    sellerVerification: {
+      payoutStatus: string;
+      bankName: string | null;
+      bankAccountLast4: string | null;
+      paystackRecipientCode: string | null;
+    } | null;
+  };
+  order: {
+    id: string;
+    paymentReference: string | null;
+    status: string;
+    createdAt: Date;
+  };
+};
+
+export type SellerPayoutReconciliationRow = {
+  orderId: string;
+  orderCreatedAt: string;
+  orderStatus: string;
+  paymentReference: string;
+  sellerId: string;
+  sellerName: string;
+  itemCount: number;
+  quantity: number;
+  grossUsdCents: number;
+  sellerFeeUsdCents: number;
+  netPayoutUsdCents: number;
+  payoutStatus: string;
+  bankName: string;
+  bankAccountLast4: string;
+  paystackRecipientCode: string;
+  transferStatus: "NOT_TRACKED";
+  action: string;
+};
+
+type PayoutGroup = {
+  row: SellerPayoutReconciliationRow;
+  hasInvalidAmounts: boolean;
+};
+
+export function buildSellerPayoutReconciliationRows(
+  items: PayoutOrderItem[],
+): SellerPayoutReconciliationRow[] {
+  const groups = new Map<string, PayoutGroup>();
+
+  for (const item of items) {
+    const key = `${item.order.id}:${item.sellerId}`;
+    const existing = groups.get(key);
+    const grossCents = item.quantity * item.unitPriceCents;
+    const validAmounts = Number.isSafeInteger(item.quantity)
+      && item.quantity > 0
+      && Number.isSafeInteger(item.unitPriceCents)
+      && item.unitPriceCents >= 0
+      && Number.isSafeInteger(item.sellerFeeCents)
+      && item.sellerFeeCents >= 0
+      && Number.isSafeInteger(grossCents)
+      && item.sellerFeeCents <= grossCents;
+    const safeGrossCents = validAmounts ? grossCents : 0;
+    const safeFeeCents = validAmounts ? item.sellerFeeCents : 0;
+    const verification = item.seller.sellerVerification;
+
+    if (existing) {
+      existing.row.itemCount += 1;
+      existing.row.quantity += Number.isSafeInteger(item.quantity) && item.quantity > 0 ? item.quantity : 0;
+      existing.row.grossUsdCents += safeGrossCents;
+      existing.row.sellerFeeUsdCents += safeFeeCents;
+      existing.row.netPayoutUsdCents += safeGrossCents - safeFeeCents;
+      existing.hasInvalidAmounts ||= !validAmounts;
+      continue;
+    }
+
+    groups.set(key, {
+      row: {
+        orderId: item.order.id,
+        orderCreatedAt: item.order.createdAt.toISOString(),
+        orderStatus: item.order.status,
+        paymentReference: item.order.paymentReference ?? "",
+        sellerId: item.sellerId,
+        sellerName: item.seller.displayName ?? "",
+        itemCount: 1,
+        quantity: Number.isSafeInteger(item.quantity) && item.quantity > 0 ? item.quantity : 0,
+        grossUsdCents: safeGrossCents,
+        sellerFeeUsdCents: safeFeeCents,
+        netPayoutUsdCents: safeGrossCents - safeFeeCents,
+        payoutStatus: verification?.payoutStatus ?? "NOT_STARTED",
+        bankName: verification?.bankName ?? "",
+        bankAccountLast4: verification?.bankAccountLast4 ?? "",
+        paystackRecipientCode: verification?.paystackRecipientCode ?? "",
+        transferStatus: "NOT_TRACKED",
+        action: "",
+      },
+      hasInvalidAmounts: !validAmounts,
+    });
+  }
+
+  return Array.from(groups.values(), ({ row, hasInvalidAmounts }) => {
+    row.action = row.orderStatus === "CANCELLED"
+      ? "BLOCKED_CANCELLED_ORDER"
+      : hasInvalidAmounts
+        ? "BLOCKED_INVALID_AMOUNT"
+        : row.netPayoutUsdCents <= 0
+          ? "BLOCKED_NON_POSITIVE_PAYOUT"
+          : row.payoutStatus !== "VERIFIED"
+            ? "BLOCKED_PAYOUT_NOT_VERIFIED"
+            : !row.paystackRecipientCode
+              ? "BLOCKED_NO_PAYSTACK_RECIPIENT"
+              : "RECONCILE_WITH_PAYSTACK_BEFORE_TRANSFER";
+    return row;
+  }).sort((left, right) =>
+    left.orderCreatedAt.localeCompare(right.orderCreatedAt)
+    || left.orderId.localeCompare(right.orderId)
+    || left.sellerId.localeCompare(right.sellerId));
+}
+
+const columns: Array<keyof SellerPayoutReconciliationRow> = [
+  "orderId",
+  "orderCreatedAt",
+  "orderStatus",
+  "paymentReference",
+  "sellerId",
+  "sellerName",
+  "itemCount",
+  "quantity",
+  "grossUsdCents",
+  "sellerFeeUsdCents",
+  "netPayoutUsdCents",
+  "payoutStatus",
+  "bankName",
+  "bankAccountLast4",
+  "paystackRecipientCode",
+  "transferStatus",
+  "action",
+];
+
+function csvCell(value: string | number): string {
+  const text = String(value);
+  const safeText = /^[\s]*[=+\-@]/.test(text) ? `'${text}` : text;
+  return `"${safeText.replaceAll('"', '""')}"`;
+}
+
+export function sellerPayoutReconciliationCsv(rows: SellerPayoutReconciliationRow[]): string {
+  const header = columns.map((column) => csvCell(column)).join(",");
+  const lines = rows.map((row) => columns.map((column) => csvCell(row[column])).join(","));
+  return [header, ...lines].join("\r\n");
+}
