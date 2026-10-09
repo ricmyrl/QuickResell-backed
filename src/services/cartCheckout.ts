@@ -3,7 +3,7 @@ import type { Post } from "../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
 import { verifyPaystackTransaction } from "./paystack.js";
 import { isAuctionPaymentOnTime } from "./auctionPaymentPolicy.js";
-import { processPendingSellerPayouts } from "./sellerPayouts.js";
+import { getSellerPayoutNotification, processPendingSellerPayouts } from "./sellerPayouts.js";
 
 export class CartPaymentError extends Error {
   constructor(message: string, readonly status: number) {
@@ -225,7 +225,22 @@ export async function finalizeCartCheckout(reference: string, buyerId: string) {
                 : "PAYSTACK_RECIPIENT_MISSING",
       });
     }
-    await transaction.sellerPayout.createMany({ data: payoutRows });
+    for (const payoutData of payoutRows) {
+      const payout = await transaction.sellerPayout.create({ data: payoutData });
+      if (payout.status === "BLOCKED") {
+        const notification = getSellerPayoutNotification("BLOCKED", null, createdOrder.id);
+        await transaction.notification.create({
+          data: {
+            userId: payout.sellerId,
+            type: "ORDER_UPDATE",
+            title: notification.title,
+            message: notification.message,
+            entityType: "SELLER_PAYOUT",
+            entityId: payout.id,
+          },
+        });
+      }
+    }
 
     const sellerOrderLines = new Map<string, string[]>();
     for (const line of purchaseLines) {
