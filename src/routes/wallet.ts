@@ -3,7 +3,6 @@ import axios from "axios";
 import { Router } from "express";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
-import { ngnKoboToUsdCents } from "../services/exchangeRates.js";
 import { getPaystackCallbackUrl, getPaystackSecretKey } from "../services/paystack.js";
 import { finalizeWalletTopUp, WalletPaymentError } from "../services/walletPayments.js";
 
@@ -129,7 +128,7 @@ router.get("/wallet", async (request, response) => {
         orderId: item.orderId,
         orderItemId: item.id,
         title: item.title,
-        amountUsdCents: item.quantity * item.unitPriceCents - item.sellerFeeCents,
+        amountCents: item.quantity * item.unitPriceCents - item.sellerFeeCents,
         status: item.sellerPayout?.status ?? "NOT_TRACKED",
         fulfillmentStatus: item.fulfillmentStatus,
         createdAt: item.createdAt,
@@ -163,13 +162,7 @@ router.post("/wallet/topups/initialize", async (request, response) => {
     return;
   }
 
-  let walletAmountCents: number;
-  try {
-    walletAmountCents = await ngnKoboToUsdCents(amountKobo);
-  } catch {
-    response.status(503).json({ error: "Payment is temporarily unavailable because exchange rates could not be loaded." });
-    return;
-  }
+  const walletAmountCents = amountKobo;
   if (walletAmountCents < 100) {
     response.status(400).json({ error: "This deposit is below the minimum wallet credit. Enter a larger amount in naira." });
     return;
@@ -214,7 +207,7 @@ router.post("/wallet/topups/initialize", async (request, response) => {
           transactionType: "WALLET_TOPUP",
           walletTransactionId: transaction.id,
           userId: user.id,
-          amountUsdCents: walletAmountCents,
+          amountKobo,
           paymentAmountKobo: amountKobo,
         },
       },

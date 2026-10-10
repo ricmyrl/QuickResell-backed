@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { verifyPaystackTransaction } from "./paystack.js";
 import { isAuctionPaymentOnTime } from "./auctionPaymentPolicy.js";
 import { getSellerPayoutNotification } from "./sellerPayouts.js";
+import { legacyUsdToNgnRate } from "./exchangeRates.js";
 
 export class CartPaymentError extends Error {
   constructor(message: string, readonly status: number) {
@@ -12,7 +13,13 @@ export class CartPaymentError extends Error {
   }
 }
 
-type VerifiedCartPayment = { subtotalUsdCents: number; cartItemIds: string[]; paidAt: Date | null };
+type VerifiedCartPayment = {
+  subtotalCents: number;
+  legacySubtotalUsdCents: number | null;
+  cartItemIds: string[];
+  paidAt: Date | null;
+  legacyCurrency: boolean;
+};
 
 export async function verifyCartPayment(reference: string, buyerId: string): Promise<VerifiedCartPayment> {
   let transaction;
@@ -30,11 +37,17 @@ export async function verifyCartPayment(reference: string, buyerId: string): Pro
     throw new CartPaymentError("Payment verification failed or the transaction is not complete.", 402);
   }
 
-  const subtotalUsdCents = Number(transaction.metadata.subtotalUsdCents);
+  const legacyCurrency = transaction.metadata.subtotalKobo === undefined;
+  const subtotalCents = Number(legacyCurrency
+    ? transaction.metadata.paymentAmountKobo
+    : transaction.metadata.subtotalKobo);
+  const legacySubtotalUsdCents = Number(transaction.metadata.subtotalUsdCents);
   const cartItemIds: unknown = transaction.metadata.cartItemIds;
   const paymentAmountKobo = Number(transaction.metadata.paymentAmountKobo);
-  if (!Number.isSafeInteger(subtotalUsdCents)
-    || subtotalUsdCents <= 0
+  if (!Number.isSafeInteger(subtotalCents)
+    || subtotalCents <= 0
+    || (legacyCurrency && (!Number.isSafeInteger(legacySubtotalUsdCents) || legacySubtotalUsdCents <= 0))
+    || (!legacyCurrency && subtotalCents !== paymentAmountKobo)
     || !Array.isArray(cartItemIds)
     || cartItemIds.length === 0
     || cartItemIds.length > 100
@@ -48,9 +61,11 @@ export async function verifyCartPayment(reference: string, buyerId: string): Pro
   const paidAtValue = transaction.paid_at;
   const paidAt = typeof paidAtValue === "string" ? new Date(paidAtValue) : null;
   return {
-    subtotalUsdCents,
+    subtotalCents,
+    legacySubtotalUsdCents: legacyCurrency ? legacySubtotalUsdCents : null,
     cartItemIds,
     paidAt: paidAt && Number.isFinite(paidAt.getTime()) ? paidAt : null,
+    legacyCurrency,
   };
 }
 
@@ -172,7 +187,17 @@ export async function finalizeCartCheckout(
     if (purchaseLines.length === 0) return null;
     const subtotalCents = purchaseLines.reduce((sum, line) => sum + line.quantity * line.unitPriceCents, 0);
     if (!Number.isSafeInteger(subtotalCents) || subtotalCents <= 0) throw new CartPaymentError("The order total is invalid.", 400);
-    if (verifiedPayment && subtotalCents !== verifiedPayment.subtotalUsdCents) {
+    if (verifiedPayment?.legacyCurrency) {
+      const legacySubtotalUsdCents = purchaseLines.reduce((sum, line) =>
+        sum + Math.round(line.unitPriceCents / 100 / legacyUsdToNgnRate * 100) * line.quantity, 0);
+      if (legacySubtotalUsdCents !== verifiedPayment.legacySubtotalUsdCents) {
+        throw new CartPaymentError("The payable items changed after payment started. Contact support with your payment reference.", 409);
+      }
+      const roundingTolerance = Math.ceil(purchaseLines.reduce((sum, line) => sum + line.quantity, 0) / 2);
+      if (Math.abs(subtotalCents - verifiedPayment.subtotalCents) > roundingTolerance) {
+        throw new CartPaymentError("The converted cart total differs from the amount paid. Contact support with your payment reference.", 409);
+      }
+    } else if (verifiedPayment && subtotalCents !== verifiedPayment.subtotalCents) {
       throw new CartPaymentError("The payable items changed after payment started. Contact support with your payment reference.", 409);
     }
 
@@ -246,23 +271,23 @@ export async function finalizeCartCheckout(
         }));
       }
       const verification = sellerVerifications.get(orderItem.sellerId);
-      const amountUsdCents = orderItem.quantity * orderItem.unitPriceCents - orderItem.sellerFeeCents;
+      const amountCents = orderItem.quantity * orderItem.unitPriceCents - orderItem.sellerFeeCents;
       const eligible = verification?.payoutStatus === "VERIFIED"
         && Boolean(verification.bankAccountNumber)
         && Boolean(verification.bankAccountName)
         && Boolean(verification.paystackRecipientCode)
-        && amountUsdCents > 0;
+        && amountCents > 0;
       payoutRows.push({
         orderId: createdOrder.id,
         orderItemId: orderItem.id,
         sellerId: orderItem.sellerId,
-        amountUsdCents,
+        amountCents,
         recipientCode: eligible ? verification.paystackRecipientCode : null,
         transferReference: `QRSP_${randomUUID().replaceAll("-", "")}`,
         status: eligible ? "PENDING" as const : "BLOCKED" as const,
         failureReason: eligible
           ? null
-          : amountUsdCents <= 0
+          : amountCents <= 0
             ? "NON_POSITIVE_PAYOUT"
             : verification?.payoutStatus !== "VERIFIED"
               ? "PAYOUT_ACCOUNT_NOT_VERIFIED"

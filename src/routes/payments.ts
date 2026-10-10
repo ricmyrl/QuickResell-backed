@@ -3,7 +3,6 @@ import axios from "axios";
 import { Router } from "express";
 import { requireConfirmedEmail, requirePasskeyVerification, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
-import { usdToNgnKobo } from "../services/exchangeRates.js";
 import { getPaystackCallbackUrl, getPaystackSecretKey, verifyPaystackTransaction } from "../services/paystack.js";
 import { auctionPaymentGraceMs } from "../services/auctionPaymentPolicy.js";
 
@@ -91,24 +90,17 @@ router.post("/payments/initialize", requirePasskeyVerification, async (request, 
     return;
   }
 
-  const subtotalUsd = eligibleItems.reduce((total, item) => {
+  const subtotalKobo = eligibleItems.reduce((total, item) => {
     const unitPriceCents = Math.round((item.auctionRoomId && item.post.auctionRoom
       ? item.post.auctionRoom.currentHighestBid
       : item.post.price) * 100);
     return total + unitPriceCents * item.quantity;
-  }, 0) / 100;
-  if (!Number.isFinite(subtotalUsd) || subtotalUsd <= 0) {
+  }, 0);
+  if (!Number.isSafeInteger(subtotalKobo) || subtotalKobo <= 0) {
     response.status(409).json({ error: "The cart total is invalid." });
     return;
   }
-
-  let amountCents: number;
-  try {
-    amountCents = await usdToNgnKobo(subtotalUsd);
-  } catch {
-    response.status(503).json({ error: "Payment is temporarily unavailable because exchange rates could not be loaded." });
-    return;
-  }
+  const amountCents = subtotalKobo;
 
   const paystackEmail = buyer.email;
   if (!paystackEmail) {
@@ -181,7 +173,7 @@ router.post("/payments/initialize", requirePasskeyVerification, async (request, 
         metadata: {
           transactionType: "CART_CHECKOUT",
           userId: buyer.id,
-          subtotalUsdCents: Math.round(subtotalUsd * 100),
+          subtotalKobo,
           paymentAmountKobo: amountCents,
           cartItemIds: eligibleItems.map((item) => item.id),
         },

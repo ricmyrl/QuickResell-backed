@@ -21,8 +21,8 @@ export type DynamicIncrementResult = {
   usedFallback: boolean;
 };
 
-const MIN_INCREMENT = 1;
-const LOG_ANCHOR = 50;
+const MIN_INCREMENT = 1_331.27;
+const LOG_ANCHOR = 66_563.35;
 const EXPONENTIAL_STEP_CAP_RATIO = 0.1;
 const BID_STEP_CAP_RATIO = 0.15;
 
@@ -30,23 +30,23 @@ export function standardBracketedIncrement(currentBid: number): number {
   if (!Number.isFinite(currentBid) || currentBid < 0) {
     throw new RangeError("currentBid must be a finite non-negative number.");
   }
-  if (currentBid < 20) return 1;
-  if (currentBid < 100) return 5;
-  if (currentBid < 500) return 10;
-  if (currentBid < 2500) return 25;
-  return 50;
+  if (currentBid < 26_625.34) return 1_331.27;
+  if (currentBid < 133_126.70) return 6_656.34;
+  if (currentBid < 665_633.51) return 13_312.67;
+  if (currentBid < 3_328_167.54) return 33_281.68;
+  return 66_563.35;
 }
 
 function marketGranularity(step: number): number {
-  return step < 10 ? 0.5 : step <= 100 ? 1 : 5;
+  return step < 13_312.67 ? 665.63 : step <= 133_126.70 ? 1_331.27 : 6_656.34;
 }
 
-function roundAndClampStep(rawStep: number, currentBid: number): number {
+function roundAndClampStep(rawStep: number, currentBid: number, stepCapRatio = BID_STEP_CAP_RATIO): number {
   const granularity = marketGranularity(rawStep);
   let step = Math.round((rawStep + Number.EPSILON) / granularity) * granularity;
-  const upperBound = Math.max(MIN_INCREMENT, currentBid * BID_STEP_CAP_RATIO);
+  const upperBound = Math.max(MIN_INCREMENT, currentBid * stepCapRatio);
   if (step > upperBound) {
-    step = Math.floor((upperBound + Number.EPSILON) / granularity) * granularity;
+    step = Math.floor(upperBound / granularity) * granularity;
   }
   return Math.max(MIN_INCREMENT, Math.round(step * 100) / 100);
 }
@@ -60,8 +60,8 @@ export function calculateDynamicBidIncrement(input: DynamicIncrementInput): Dyna
   const {
     currentBid,
     curve: configuredCurve,
-    alphaParam = 5,
-    gammaParam = 0.0015,
+    alphaParam = 6_656.33507,
+    gammaParam = 0.000001126807,
     velocityBidsPerMinute,
   } = input;
   if (!Number.isFinite(currentBid) || currentBid < 0) {
@@ -79,11 +79,11 @@ export function calculateDynamicBidIncrement(input: DynamicIncrementInput): Dyna
 
   let rawIncrement: number;
   if (curve === "LOGARITHMIC") {
-    const alpha = alphaParam ?? 5;
+    const alpha = alphaParam ?? 6_656.33507;
     if (!Number.isFinite(alpha) || alpha < 0) return fallback(currentBid);
     rawIncrement = MIN_INCREMENT + alpha * Math.log1p(currentBid / LOG_ANCHOR);
   } else if (curve === "EXPONENTIAL") {
-    const gamma = gammaParam ?? 0.0015;
+    const gamma = gammaParam ?? 0.000001126807;
     if (!Number.isFinite(gamma) || gamma < 0) return fallback(currentBid);
     rawIncrement = Math.min(
       MIN_INCREMENT * Math.exp(gamma * currentBid),
@@ -99,6 +99,10 @@ export function calculateDynamicBidIncrement(input: DynamicIncrementInput): Dyna
   }
 
   if (!Number.isFinite(rawIncrement) || rawIncrement <= 0) return fallback(currentBid);
-  const increment = roundAndClampStep(rawIncrement, currentBid);
+  const increment = roundAndClampStep(
+    rawIncrement,
+    currentBid,
+    curve === "EXPONENTIAL" ? EXPONENTIAL_STEP_CAP_RATIO : BID_STEP_CAP_RATIO,
+  );
   return { increment, curveUsed: curve, usedFallback: false };
 }

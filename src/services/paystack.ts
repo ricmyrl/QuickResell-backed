@@ -12,6 +12,13 @@ export type PaystackTransaction = {
 
 export type PaystackBank = { name: string; code: string };
 
+export function validatePayoutAmountKobo(amountKobo: number): number {
+  if (!Number.isSafeInteger(amountKobo) || amountKobo <= 0) {
+    throw new Error("The seller payout must be a positive whole-kobo amount.");
+  }
+  return amountKobo;
+}
+
 export function getPaystackProviderErrorMessage(error: unknown): string | undefined {
   if (!axios.isAxiosError<{ message?: unknown }>(error)) return undefined;
   const message = error.response?.data?.message;
@@ -53,12 +60,6 @@ export function normalizePaystackBanks(
     }
     return left.name.localeCompare(right.name);
   });
-}
-
-export function convertUsdToPayoutKobo(usdAmount: number, ngnRate: number): number {
-  if (!Number.isFinite(usdAmount) || usdAmount <= 0) return 0;
-  if (!Number.isFinite(ngnRate) || ngnRate <= 0) throw new Error("A valid NGN exchange rate is required for payouts.");
-  return Math.round(usdAmount * ngnRate * 100);
 }
 
 export async function createPaystackTransferRecipient({
@@ -106,6 +107,7 @@ export async function initiateSellerPayout({
   reference: string
   reason: string
 }): Promise<{ reference?: string; transfer_code?: string; status?: string }> {
+  validatePayoutAmountKobo(amountKobo);
   const response = await axios.post<{ data?: { reference?: string; transfer_code?: string; status?: string } }>(
     "https://api.paystack.co/transfer",
     {

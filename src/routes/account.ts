@@ -94,8 +94,8 @@ router.patch("/account", async (request, response) => {
     return;
   }
   if (budgetPreference !== null
-    && (typeof budgetPreference !== "number" || !Number.isFinite(budgetPreference) || budgetPreference < 0 || budgetPreference > 100000)) {
-    response.status(400).json({ error: "Budget must be between 0 and 100,000, or left blank." });
+    && (typeof budgetPreference !== "number" || !Number.isFinite(budgetPreference) || budgetPreference < 0 || budgetPreference > 200_000_000)) {
+    response.status(400).json({ error: "Budget must be between 0 and 200,000,000 naira, or left blank." });
     return;
   }
   if (avatarUrl !== undefined && avatarUrl !== null && !isOwnedAvatarUrl(avatarUrl, user.id)) {

@@ -27,7 +27,7 @@ function getMailgunClient() {
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
-    currency: "USD",
+    currency: "NGN",
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(Number.isFinite(value) ? value : 0);

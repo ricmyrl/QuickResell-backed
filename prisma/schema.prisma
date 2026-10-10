@@ -374,8 +374,8 @@ model AuctionRoom {
   platformFeeCents   Int                    @default(0)
   platformFeeEnabled Boolean                @default(false)
   incrementCurve     IncrementCurveType     @default(LINEAR_TIERED)
-  curveAlphaParam    Float?                 @default(5.0)
-  curveGammaParam    Float?                 @default(0.0015)
+  curveAlphaParam    Float?                 @default(6656.33507)
+  curveGammaParam    Float?                 @default(0.000001126807)
   highestBidderId    String?                @db.Uuid
   isPublic           Boolean                @default(false)
   reservePrice       Float?
@@ -406,7 +406,7 @@ model Bid {
   bidderId             String      @db.Uuid
   sequence             Int
   amount               Float
-  incrementAmountCents Int
+  incrementAmountCents Float
   strategyMetadata     Json?
   createdAt            DateTime    @default(now())
   auctionRoom          AuctionRoom @relation(fields: [auctionRoomId], references: [id], onDelete: Cascade)
@@ -451,7 +451,7 @@ model AuctionWatchlistItem {
   userId              String      @db.Uuid
   auctionRoomId       String
   maxBid              Float
-  bidStep             Float       @default(1)
+  bidStep             Float       @default(1331.27)
   strategy            BidStrategy @default(STANDARD)
   jumpMultiplier      Float       @default(2)
   sniperWindowSeconds Int         @default(120)
@@ -539,7 +539,7 @@ model SellerPayout {
   orderId           String
   orderItemId       String?            @unique
   sellerId          String             @db.Uuid
-  amountUsdCents    Int
+  amountCents       Int
   amountKobo        Int?
   recipientCode     String?
   transferReference String?            @unique

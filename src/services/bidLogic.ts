@@ -1,4 +1,5 @@
-export const maxAllowedBid = 10_000_000;
+export const maxAllowedBid = 13_312_670_140;
+export const minimumBidIncrement = 1_331.27;
 
 export type AutoBidRuleCandidate = {
   id: string;
@@ -27,7 +28,7 @@ export function isValidManualBidAmount(value: unknown): value is number {
 }
 
 export function minimumBidAmount(currentHighestBid: number, startingPrice: number): number {
-  return Math.max(currentHighestBid, startingPrice) + 1;
+  return Math.max(currentHighestBid, startingPrice) + minimumBidIncrement;
 }
 
 export function calculateProxyBid(
@@ -40,14 +41,14 @@ export function calculateProxyBid(
     ![currentHighestBid, maxBid, bidStep, competingMaxBid].every(Number.isFinite) ||
     currentHighestBid < 0 ||
     bidStep <= 0 ||
-    maxBid < currentHighestBid + 1 ||
+    maxBid < currentHighestBid + minimumBidIncrement ||
     competingMaxBid < currentHighestBid ||
     competingMaxBid > maxBid
   ) {
     return null;
   }
 
-  const rawNextAmount = Math.max(currentHighestBid + 1, currentHighestBid + bidStep, competingMaxBid + bidStep);
+  const rawNextAmount = Math.max(currentHighestBid + minimumBidIncrement, currentHighestBid + bidStep, competingMaxBid + bidStep);
   const nextAmount = roundCurrency(rawNextAmount);
   const cappedAmount = roundCurrency(Math.min(maxBid, nextAmount));
 
@@ -65,7 +66,7 @@ export function selectProxyBid(
       rule.autoBidEnabled &&
       rule.userId !== sellerId &&
       Number.isFinite(rule.maxBid) &&
-      rule.maxBid >= currentHighestBid + 1 &&
+      rule.maxBid >= currentHighestBid + minimumBidIncrement &&
       rule.maxBid <= maxAllowedBid &&
       Number.isFinite(rule.bidStep) &&
       rule.bidStep > 0,

@@ -29,7 +29,11 @@ export async function finalizeWalletTopUp(reference: string, userId: string): Pr
     || payment.metadata?.transactionType !== "WALLET_TOPUP"
     || payment.metadata.walletTransactionId !== transaction.id
     || payment.metadata.userId !== userId
-    || payment.metadata.amountUsdCents !== transaction.amountCents
+    || (payment.metadata.amountKobo !== transaction.amountCents
+      && !(transaction.status === "PENDING"
+        ? payment.metadata.amountUsdCents === transaction.amountCents
+        : Number.isSafeInteger(payment.metadata.amountUsdCents)
+          && transaction.amountCents === transaction.paymentAmountKobo))
     || payment.metadata.paymentAmountKobo !== transaction.paymentAmountKobo) {
     throw new WalletPaymentError("Payment could not be verified for this wallet deposit.", 402);
   }
@@ -37,12 +41,15 @@ export async function finalizeWalletTopUp(reference: string, userId: string): Pr
   const wallet = await prisma.$transaction(async (database) => {
     const updated = await database.walletTransaction.updateMany({
       where: { id: transaction.id, status: "PENDING" },
-      data: { status: "COMPLETED" },
+      data: {
+        status: "COMPLETED",
+        amountCents: transaction.paymentAmountKobo ?? transaction.amountCents,
+      },
     });
     if (updated.count === 1) {
       await database.wallet.update({
         where: { id: transaction.walletId },
-        data: { balanceCents: { increment: transaction.amountCents } },
+        data: { balanceCents: { increment: transaction.paymentAmountKobo ?? transaction.amountCents } },
       });
     }
     return database.wallet.findUniqueOrThrow({

@@ -1,6 +1,5 @@
 import { prisma } from "../lib/prisma.js";
-import { getExchangeRates } from "./exchangeRates.js";
-import { convertUsdToPayoutKobo, initiateSellerPayout } from "./paystack.js";
+import { initiateSellerPayout } from "./paystack.js";
 
 export type PayoutNotificationStatus = "BLOCKED" | "SUCCESS" | "FAILED" | "REVERSED" | "REVIEW_REQUIRED";
 
@@ -139,7 +138,7 @@ export async function cashOutSellerOrderItem(itemId: string, sellerId: string) {
 
   let payout = item.sellerPayout;
   if (payout.status === "BLOCKED") {
-    if (payout.amountUsdCents <= 0) {
+    if (payout.amountCents <= 0) {
       throw new SellerCashoutError("This item has no positive seller proceeds to cash out.", 409);
     }
     const updated = await prisma.sellerPayout.updateMany({
@@ -169,8 +168,7 @@ export async function cashOutSellerOrderItem(itemId: string, sellerId: string) {
     throw new SellerCashoutError("A verified Paystack recipient is required before cashing out.", 409);
   }
 
-  const payoutRate = await getExchangeRates();
-  const amountKobo = convertUsdToPayoutKobo(payout.amountUsdCents / 100, payoutRate.rates.NGN);
+  const amountKobo = payout.amountCents;
   if (!Number.isSafeInteger(amountKobo) || amountKobo <= 0) {
     throw new SellerCashoutError("The payout amount could not be calculated safely.", 409);
   }
@@ -188,8 +186,8 @@ export async function cashOutSellerOrderItem(itemId: string, sellerId: string) {
     if (payoutClaim.count !== 1) return false;
 
     const walletDebit = await transaction.wallet.updateMany({
-      where: { userId: sellerId, balanceCents: { gte: payout.amountUsdCents } },
-      data: { balanceCents: { decrement: payout.amountUsdCents } },
+      where: { userId: sellerId, balanceCents: { gte: payout.amountCents } },
+      data: { balanceCents: { decrement: payout.amountCents } },
     });
     if (walletDebit.count !== 1) {
       throw new SellerCashoutError("Your available wallet balance is too low to cash out this sale.", 409);
@@ -202,7 +200,7 @@ export async function cashOutSellerOrderItem(itemId: string, sellerId: string) {
       data: {
         walletId: wallet.id,
         paymentReference: `QR-CASHOUT-${payout.id}`,
-        amountCents: payout.amountUsdCents,
+        amountCents: payout.amountCents,
         paymentAmountKobo: amountKobo,
         type: "CASHOUT",
         direction: "DEBIT",
