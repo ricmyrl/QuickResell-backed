@@ -18,21 +18,104 @@ router.get("/wallet", async (request, response) => {
     return;
   }
 
-  const wallet = await prisma.wallet.findUnique({
-    where: { userId: user.id },
-    include: {
-      transactions: {
-        where: { status: "COMPLETED" },
-        orderBy: { createdAt: "desc" },
-        take: 20,
-        select: { id: true, amountCents: true, paymentReference: true, createdAt: true },
+  const paidOrderFilter = {
+    sellerId: user.id,
+    order: { is: { paymentReference: { not: null }, status: { not: "CANCELLED" as const } } },
+  };
+  const [
+    wallet,
+    payoutAccount,
+    earned,
+    pendingFulfillment,
+    readyForCashout,
+    paidOut,
+    payouts,
+  ] = await Promise.all([
+    prisma.wallet.findUnique({
+      where: { userId: user.id },
+      include: {
+        transactions: {
+          where: { status: "COMPLETED" },
+          orderBy: { createdAt: "desc" },
+          take: 20,
+          select: { id: true, amountCents: true, paymentReference: true, createdAt: true },
+        },
       },
-    },
-  });
+    }),
+    prisma.sellerVerification.findUnique({
+      where: { userId: user.id },
+      select: {
+        payoutStatus: true,
+        bankAccountNumber: true,
+        bankAccountName: true,
+        paystackRecipientCode: true,
+      },
+    }),
+    prisma.sellerPayout.aggregate({
+      where: paidOrderFilter,
+      _sum: { amountUsdCents: true },
+    }),
+    prisma.sellerPayout.aggregate({
+      where: {
+        ...paidOrderFilter,
+        amountUsdCents: { gt: 0 },
+        status: { in: ["PENDING", "BLOCKED"] },
+        orderItem: { is: { fulfillmentStatus: "PENDING_HANDOFF" } },
+      },
+      _sum: { amountUsdCents: true },
+    }),
+    prisma.sellerPayout.aggregate({
+      where: {
+        ...paidOrderFilter,
+        amountUsdCents: { gt: 0 },
+        status: { in: ["PENDING", "BLOCKED"] },
+        orderItem: { is: { fulfillmentStatus: { in: ["READY_FOR_PICKUP", "SHIPPED", "COMPLETED"] } } },
+      },
+      _sum: { amountUsdCents: true },
+    }),
+    prisma.sellerPayout.aggregate({
+      where: { ...paidOrderFilter, status: "SUCCESS" },
+      _sum: { amountUsdCents: true },
+    }),
+    prisma.sellerPayout.findMany({
+      where: { ...paidOrderFilter, orderItemId: { not: null } },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+      select: {
+        id: true,
+        orderId: true,
+        orderItemId: true,
+        amountUsdCents: true,
+        status: true,
+        createdAt: true,
+        orderItem: { select: { title: true, fulfillmentStatus: true } },
+      },
+    }),
+  ]);
 
   response.json({
     balanceCents: wallet?.balanceCents ?? 0,
     transactions: wallet?.transactions ?? [],
+    sellerEarnings: {
+      earnedCents: earned._sum.amountUsdCents ?? 0,
+      pendingFulfillmentCents: pendingFulfillment._sum.amountUsdCents ?? 0,
+      readyForCashoutCents: readyForCashout._sum.amountUsdCents ?? 0,
+      paidOutCents: paidOut._sum.amountUsdCents ?? 0,
+      payoutAccountVerified: payoutAccount?.payoutStatus === "VERIFIED"
+        && Boolean(payoutAccount.bankAccountNumber)
+        && Boolean(payoutAccount.bankAccountName)
+        && Boolean(payoutAccount.paystackRecipientCode),
+      payouts: payouts.flatMap((payout) => payout.orderItem && payout.orderItemId ? [{
+        id: payout.id,
+        orderId: payout.orderId,
+        orderItemId: payout.orderItemId,
+        title: payout.orderItem.title,
+        amountUsdCents: payout.amountUsdCents,
+        status: payout.status,
+        fulfillmentStatus: payout.orderItem.fulfillmentStatus,
+        createdAt: payout.createdAt,
+      }] : []),
+    },
   });
 });
 
