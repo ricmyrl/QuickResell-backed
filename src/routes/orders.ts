@@ -165,10 +165,11 @@ router.post("/seller/orders/:itemId/fulfillment", requireConfirmedEmail, async (
   const result = await prisma.$transaction(async (transaction) => {
     const item = await transaction.purchaseOrderItem.findFirst({
       where: { id: itemId, sellerId: seller.id },
-      include: { order: { select: { buyerId: true, paymentReference: true } } },
+      include: { order: { select: { buyerId: true, paymentReference: true, status: true } } },
     });
     if (!item) return { error: "Order item not found.", status: 404 as const };
     if (!item.order.paymentReference) return { error: "Payment must be confirmed before fulfillment.", status: 409 as const };
+    if (item.order.status === "CANCELLED") return { error: "A cancelled order cannot be fulfilled.", status: 409 as const };
     if (item.fulfillmentStatus !== "PENDING_HANDOFF") {
       return { error: "This order item already has a fulfillment update.", status: 409 as const };
     }
@@ -179,6 +180,28 @@ router.post("/seller/orders/:itemId/fulfillment", requireConfirmedEmail, async (
       data: { fulfillmentMethod: method, fulfillmentStatus: status },
     });
     if (updated.count !== 1) return { error: "This order item has already changed.", status: 409 as const };
+
+    const earningsCents = item.quantity * item.unitPriceCents - item.sellerFeeCents;
+    if (earningsCents > 0) {
+      const wallet = await transaction.wallet.upsert({
+        where: { userId: seller.id },
+        create: { userId: seller.id, balanceCents: earningsCents },
+        update: { balanceCents: { increment: earningsCents } },
+        select: { id: true },
+      });
+      await transaction.walletTransaction.create({
+        data: {
+          walletId: wallet.id,
+          paymentReference: `QR-SEARN-${item.id}`,
+          amountCents: earningsCents,
+          type: "SELLER_EARNING",
+          direction: "CREDIT",
+          orderId: item.orderId,
+          orderItemId: item.id,
+          status: "COMPLETED",
+        },
+      });
+    }
 
     const order = await transaction.purchaseOrder.findUniqueOrThrow({
       where: { id: item.orderId },

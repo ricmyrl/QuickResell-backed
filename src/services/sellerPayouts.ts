@@ -175,16 +175,45 @@ export async function cashOutSellerOrderItem(itemId: string, sellerId: string) {
     throw new SellerCashoutError("The payout amount could not be calculated safely.", 409);
   }
 
-  const claimed = await prisma.sellerPayout.updateMany({
-    where: { id: payout.id, status: "PENDING" },
-    data: {
-      status: "PROCESSING",
-      amountKobo,
-      recipientCode: verification.paystackRecipientCode,
-      failureReason: null,
-    },
+  const claimed = await prisma.$transaction(async (transaction) => {
+    const payoutClaim = await transaction.sellerPayout.updateMany({
+      where: { id: payout.id, status: "PENDING" },
+      data: {
+        status: "PROCESSING",
+        amountKobo,
+        recipientCode: verification.paystackRecipientCode,
+        failureReason: null,
+      },
+    });
+    if (payoutClaim.count !== 1) return false;
+
+    const walletDebit = await transaction.wallet.updateMany({
+      where: { userId: sellerId, balanceCents: { gte: payout.amountUsdCents } },
+      data: { balanceCents: { decrement: payout.amountUsdCents } },
+    });
+    if (walletDebit.count !== 1) {
+      throw new SellerCashoutError("Your available wallet balance is too low to cash out this sale.", 409);
+    }
+    const wallet = await transaction.wallet.findUniqueOrThrow({
+      where: { userId: sellerId },
+      select: { id: true },
+    });
+    await transaction.walletTransaction.create({
+      data: {
+        walletId: wallet.id,
+        paymentReference: `QR-CASHOUT-${payout.id}`,
+        amountCents: payout.amountUsdCents,
+        paymentAmountKobo: amountKobo,
+        type: "CASHOUT",
+        direction: "DEBIT",
+        orderId: item.order.id,
+        orderItemId: item.id,
+        status: "COMPLETED",
+      },
+    });
+    return true;
   });
-  if (claimed.count !== 1) {
+  if (!claimed) {
     throw new SellerCashoutError("This payout was already claimed. Refresh its status before trying again.", 409);
   }
 

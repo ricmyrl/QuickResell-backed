@@ -70,15 +70,25 @@ function isAuctionCartItemAvailable(
     && room.highestBidderId === userId);
 }
 
-export async function finalizeCartCheckout(reference: string, buyerId: string) {
-  const verifiedPayment = await verifyCartPayment(reference, buyerId);
+export async function finalizeCartCheckout(
+  reference: string | null,
+  buyerId: string,
+  paymentMethod: "PAYSTACK" | "WALLET" = "PAYSTACK",
+) {
+  if (paymentMethod === "PAYSTACK" && !reference) {
+    throw new CartPaymentError("A valid Paystack payment reference is required.", 400);
+  }
+  const checkoutReference = reference ?? `QRW-${randomUUID().replaceAll("-", "")}`;
+  const verifiedPayment = paymentMethod === "PAYSTACK"
+    ? await verifyCartPayment(checkoutReference, buyerId)
+    : null;
 
   const order = await prisma.$transaction(async (transaction) => {
     await transaction.$queryRaw<Array<{ id: string }>>`
       SELECT "id" FROM "User" WHERE "id" = ${buyerId}::uuid FOR UPDATE
     `;
     const existingOrder = await transaction.purchaseOrder.findUnique({
-      where: { paymentReference: reference },
+      where: { paymentReference: checkoutReference },
       include: { items: true },
     });
     if (existingOrder) {
@@ -94,10 +104,11 @@ export async function finalizeCartCheckout(reference: string, buyerId: string) {
       orderBy: { postId: "asc" },
     });
     if (cartItems.length === 0) return null;
-    const payableCartItemIds = new Set(verifiedPayment.cartItemIds);
-    if (verifiedPayment.cartItemIds.some((id) => !cartItems.some((item) => item.id === id))) {
+    const payableCartItemIds = new Set(verifiedPayment?.cartItemIds ?? cartItems.map((item) => item.id));
+    if (verifiedPayment && verifiedPayment.cartItemIds.some((id) => !cartItems.some((item) => item.id === id))) {
       throw new CartPaymentError("Your cart changed after payment started. Contact support with your payment reference.", 409);
     }
+    const paidAt = verifiedPayment?.paidAt ?? new Date();
 
     const purchaseLines: Array<{ post: Post; quantity: number; unitPriceCents: number; sellerFeeCents: number; isAuction: boolean }> = [];
     for (const item of cartItems) {
@@ -128,9 +139,8 @@ export async function finalizeCartCheckout(reference: string, buyerId: string) {
           throw new CartPaymentError(`“${post.title}” is no longer available. Contact support with your payment reference.`, 409);
         }
         if (!isAuctionCartItemAvailable({ auctionRoomId: item.auctionRoomId, post }, buyerId)) continue;
-        if (!verifiedPayment.paidAt
-          || !isAuctionPaymentOnTime(
-            verifiedPayment.paidAt,
+        if (!isAuctionPaymentOnTime(
+            paidAt,
             post.auctionRoom.paymentDueAt,
             post.auctionRoom.paymentGraceUntil,
           )) {
@@ -161,15 +171,32 @@ export async function finalizeCartCheckout(reference: string, buyerId: string) {
 
     if (purchaseLines.length === 0) return null;
     const subtotalCents = purchaseLines.reduce((sum, line) => sum + line.quantity * line.unitPriceCents, 0);
-    if (!Number.isSafeInteger(subtotalCents)) throw new CartPaymentError("The order total is too large to process.", 400);
-    if (subtotalCents !== verifiedPayment.subtotalUsdCents) {
+    if (!Number.isSafeInteger(subtotalCents) || subtotalCents <= 0) throw new CartPaymentError("The order total is invalid.", 400);
+    if (verifiedPayment && subtotalCents !== verifiedPayment.subtotalUsdCents) {
       throw new CartPaymentError("The payable items changed after payment started. Contact support with your payment reference.", 409);
+    }
+
+    let walletId: string | null = null;
+    if (paymentMethod === "WALLET") {
+      const wallet = await transaction.wallet.findUnique({
+        where: { userId: buyerId },
+        select: { id: true },
+      });
+      if (!wallet) throw new CartPaymentError("Your wallet balance is too low for this purchase. Add funds or choose Paystack.", 409);
+      const debit = await transaction.wallet.updateMany({
+        where: { id: wallet.id, balanceCents: { gte: subtotalCents } },
+        data: { balanceCents: { decrement: subtotalCents } },
+      });
+      if (debit.count !== 1) {
+        throw new CartPaymentError("Your wallet balance is too low for this purchase. Add funds or choose Paystack.", 409);
+      }
+      walletId = wallet.id;
     }
 
     const createdOrder = await transaction.purchaseOrder.create({
       data: {
         buyerId,
-        paymentReference: reference,
+        paymentReference: checkoutReference,
         subtotalCents,
         items: { create: purchaseLines.map(({ post, quantity, unitPriceCents, sellerFeeCents }) => ({
           postId: post.id,
@@ -182,6 +209,20 @@ export async function finalizeCartCheckout(reference: string, buyerId: string) {
       },
       include: { items: true },
     });
+    if (walletId) {
+      await transaction.walletTransaction.create({
+        data: {
+          walletId,
+          paymentReference: checkoutReference,
+          amountCents: subtotalCents,
+          type: "PURCHASE",
+          direction: "DEBIT",
+          paymentAmountKobo: null,
+          orderId: createdOrder.id,
+          status: "COMPLETED",
+        },
+      });
+    }
 
     const payoutRows = [];
     const sellerVerifications = new Map<string, {

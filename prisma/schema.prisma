@@ -91,6 +91,18 @@ enum WalletTransactionStatus {
   FAILED
 }
 
+enum WalletTransactionType {
+  TOP_UP
+  PURCHASE
+  SELLER_EARNING
+  CASHOUT
+}
+
+enum WalletTransactionDirection {
+  CREDIT
+  DEBIT
+}
+
 enum SellerPayoutStatus {
   BLOCKED
   PENDING
@@ -150,9 +162,9 @@ model User {
   scoutFeedback           ScoutFeedback[]
   supportRequests         SupportRequest[]
   purchaseOrders          PurchaseOrder[]
+  wallet                  Wallet?
   soldOrderItems          PurchaseOrderItem[]
   sellerPayouts           SellerPayout[]
-  wallet                  Wallet?
   sellerVerification      SellerVerification?
 }
 
@@ -493,6 +505,7 @@ model PurchaseOrder {
   buyer            User                @relation(fields: [buyerId], references: [id], onDelete: Restrict)
   items            PurchaseOrderItem[]
   sellerPayouts    SellerPayout[]
+  walletTransactions WalletTransaction[]
 
   @@index([buyerId, createdAt])
   @@index([status, createdAt])
@@ -515,6 +528,7 @@ model PurchaseOrderItem {
   post              Post                       @relation(fields: [postId], references: [id], onDelete: Restrict)
   seller            User                       @relation(fields: [sellerId], references: [id], onDelete: Restrict)
   sellerPayout      SellerPayout?
+  walletTransactions WalletTransaction[]
 
   @@index([sellerId, createdAt])
   @@index([postId])
@@ -558,11 +572,19 @@ model WalletTransaction {
   walletId          String
   paymentReference  String                  @unique
   amountCents       Int
-  paymentAmountKobo Int
+  paymentAmountKobo Int?
+  type              WalletTransactionType  @default(TOP_UP)
+  direction         WalletTransactionDirection @default(CREDIT)
+  orderId           String?
+  orderItemId       String?
   status            WalletTransactionStatus @default(PENDING)
   createdAt         DateTime                @default(now())
   updatedAt         DateTime                @updatedAt
   wallet            Wallet                  @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  order             PurchaseOrder?          @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  orderItem         PurchaseOrderItem?      @relation(fields: [orderItemId], references: [id], onDelete: SetNull)
 
   @@index([walletId, status, createdAt])
+  @@index([orderId, type])
+  @@index([orderItemId, type])
 }

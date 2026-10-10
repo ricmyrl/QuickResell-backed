@@ -75,7 +75,7 @@ function challengeFromClientData(clientDataJSON: string): string | null {
   }
 }
 
-router.use(requireSupabaseUser);
+router.use("/passkeys", requireSupabaseUser);
 
 router.get("/passkeys/status", async (request, response) => {
   const user = currentUser(request);

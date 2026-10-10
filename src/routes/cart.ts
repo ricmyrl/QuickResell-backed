@@ -176,17 +176,30 @@ router.delete("/cart/items/:postId", async (request, response) => {
 });
 
 router.use("/cart/checkout", requireConfirmedEmail);
+router.use("/cart/checkout", (request, response, next) => {
+  if (request.method === "POST" && request.body?.paymentMethod === "WALLET") {
+    return requirePasskeyVerification(request, response, next);
+  }
+  next();
+});
 router.post("/cart/checkout", async (request, response) => {
   const buyer = currentUser(request);
   const paymentReference = request.body?.paymentReference;
-  if (typeof paymentReference !== "string" || paymentReference.trim().length < 8 || paymentReference.length > 100) {
+  const requestedPaymentMethod = request.body?.paymentMethod;
+  if (requestedPaymentMethod !== undefined && requestedPaymentMethod !== "PAYSTACK" && requestedPaymentMethod !== "WALLET") {
+    response.status(400).json({ error: "Choose Paystack or wallet as the payment method." });
+    return;
+  }
+  const paymentMethod = requestedPaymentMethod === "WALLET" ? "WALLET" : "PAYSTACK";
+  if (paymentMethod === "PAYSTACK"
+    && (typeof paymentReference !== "string" || paymentReference.trim().length < 8 || paymentReference.length > 100)) {
     response.status(400).json({ error: "A valid payment reference is required to check out." });
     return;
   }
-  const normalizedPaymentReference = paymentReference.trim();
+  const normalizedPaymentReference = typeof paymentReference === "string" ? paymentReference.trim() : null;
   let order;
   try {
-    order = await finalizeCartCheckout(normalizedPaymentReference, buyer.id);
+    order = await finalizeCartCheckout(normalizedPaymentReference, buyer.id, paymentMethod);
   } catch (error) {
     if (error instanceof CartError || error instanceof CartPaymentError) {
       response.status(error.status).json({ error: error.message });

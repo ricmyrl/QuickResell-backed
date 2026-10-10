@@ -22,14 +22,26 @@ router.get("/wallet", async (request, response) => {
     sellerId: user.id,
     order: { is: { paymentReference: { not: null }, status: { not: "CANCELLED" as const } } },
   };
+  const paidOrderItems = await prisma.purchaseOrderItem.findMany({
+    where: paidOrderFilter,
+    orderBy: { createdAt: "desc" },
+    take: 20,
+    select: {
+      id: true,
+      orderId: true,
+      title: true,
+      quantity: true,
+      unitPriceCents: true,
+      sellerFeeCents: true,
+      fulfillmentStatus: true,
+      createdAt: true,
+      sellerPayout: { select: { id: true, status: true } },
+    },
+  });
   const [
     wallet,
     payoutAccount,
-    earned,
-    pendingFulfillment,
-    readyForCashout,
-    paidOut,
-    payouts,
+    earnings,
   ] = await Promise.all([
     prisma.wallet.findUnique({
       where: { userId: user.id },
@@ -38,7 +50,15 @@ router.get("/wallet", async (request, response) => {
           where: { status: "COMPLETED" },
           orderBy: { createdAt: "desc" },
           take: 20,
-          select: { id: true, amountCents: true, paymentReference: true, createdAt: true },
+          select: {
+            id: true,
+            amountCents: true,
+            paymentReference: true,
+            createdAt: true,
+            type: true,
+            direction: true,
+            orderItem: { select: { title: true } },
+          },
         },
       },
     }),
@@ -51,70 +71,69 @@ router.get("/wallet", async (request, response) => {
         paystackRecipientCode: true,
       },
     }),
-    prisma.sellerPayout.aggregate({
-      where: paidOrderFilter,
-      _sum: { amountUsdCents: true },
-    }),
-    prisma.sellerPayout.aggregate({
-      where: {
-        ...paidOrderFilter,
-        amountUsdCents: { gt: 0 },
-        status: { in: ["PENDING", "BLOCKED"] },
-        orderItem: { is: { fulfillmentStatus: "PENDING_HANDOFF" } },
-      },
-      _sum: { amountUsdCents: true },
-    }),
-    prisma.sellerPayout.aggregate({
-      where: {
-        ...paidOrderFilter,
-        amountUsdCents: { gt: 0 },
-        status: { in: ["PENDING", "BLOCKED"] },
-        orderItem: { is: { fulfillmentStatus: { in: ["READY_FOR_PICKUP", "SHIPPED", "COMPLETED"] } } },
-      },
-      _sum: { amountUsdCents: true },
-    }),
-    prisma.sellerPayout.aggregate({
-      where: { ...paidOrderFilter, status: "SUCCESS" },
-      _sum: { amountUsdCents: true },
-    }),
-    prisma.sellerPayout.findMany({
-      where: { ...paidOrderFilter, orderItemId: { not: null } },
-      orderBy: { createdAt: "desc" },
-      take: 20,
-      select: {
-        id: true,
-        orderId: true,
-        orderItemId: true,
-        amountUsdCents: true,
-        status: true,
-        createdAt: true,
-        orderItem: { select: { title: true, fulfillmentStatus: true } },
-      },
-    }),
+    prisma.$queryRaw<Array<{
+      earnedCents: bigint;
+      pendingFulfillmentCents: bigint;
+      readyForCashoutCents: bigint;
+      paidOutCents: bigint;
+    }>>`
+      SELECT
+        COALESCE(SUM(item."quantity"::bigint * item."unitPriceCents"::bigint - item."sellerFeeCents"::bigint), 0)::bigint AS "earnedCents",
+        COALESCE(SUM(CASE
+          WHEN item."fulfillmentStatus" = 'PENDING_HANDOFF'
+          THEN item."quantity"::bigint * item."unitPriceCents"::bigint - item."sellerFeeCents"::bigint
+          ELSE 0
+        END), 0)::bigint AS "pendingFulfillmentCents",
+        COALESCE(SUM(CASE
+          WHEN payout."status" IN ('PENDING', 'BLOCKED')
+            AND item."fulfillmentStatus" IN ('READY_FOR_PICKUP', 'SHIPPED', 'COMPLETED')
+            AND payout."orderItemId" IS NOT NULL
+          THEN item."quantity"::bigint * item."unitPriceCents"::bigint - item."sellerFeeCents"::bigint
+          ELSE 0
+        END), 0)::bigint AS "readyForCashoutCents",
+        COALESCE(SUM(CASE
+          WHEN payout."status" = 'SUCCESS' AND payout."orderItemId" IS NOT NULL
+          THEN item."quantity"::bigint * item."unitPriceCents"::bigint - item."sellerFeeCents"::bigint
+          ELSE 0
+        END), 0)::bigint AS "paidOutCents"
+      FROM "PurchaseOrderItem" item
+      INNER JOIN "PurchaseOrder" orders ON orders."id" = item."orderId"
+      LEFT JOIN "SellerPayout" payout ON payout."orderItemId" = item."id"
+      WHERE item."sellerId" = ${user.id}::uuid
+        AND orders."paymentReference" IS NOT NULL
+        AND orders."status" <> 'CANCELLED'
+    `,
   ]);
+  const earningsSummary = earnings[0];
+  if (!earningsSummary) throw new Error("Seller earnings could not be summarized.");
+  const cents = (value: bigint): number => {
+    const result = Number(value);
+    if (!Number.isSafeInteger(result)) throw new Error("Seller earnings exceed the supported wallet balance range.");
+    return result;
+  };
 
   response.json({
     balanceCents: wallet?.balanceCents ?? 0,
     transactions: wallet?.transactions ?? [],
     sellerEarnings: {
-      earnedCents: earned._sum.amountUsdCents ?? 0,
-      pendingFulfillmentCents: pendingFulfillment._sum.amountUsdCents ?? 0,
-      readyForCashoutCents: readyForCashout._sum.amountUsdCents ?? 0,
-      paidOutCents: paidOut._sum.amountUsdCents ?? 0,
+      earnedCents: cents(earningsSummary.earnedCents),
+      pendingFulfillmentCents: cents(earningsSummary.pendingFulfillmentCents),
+      readyForCashoutCents: cents(earningsSummary.readyForCashoutCents),
+      paidOutCents: cents(earningsSummary.paidOutCents),
       payoutAccountVerified: payoutAccount?.payoutStatus === "VERIFIED"
         && Boolean(payoutAccount.bankAccountNumber)
         && Boolean(payoutAccount.bankAccountName)
         && Boolean(payoutAccount.paystackRecipientCode),
-      payouts: payouts.flatMap((payout) => payout.orderItem && payout.orderItemId ? [{
-        id: payout.id,
-        orderId: payout.orderId,
-        orderItemId: payout.orderItemId,
-        title: payout.orderItem.title,
-        amountUsdCents: payout.amountUsdCents,
-        status: payout.status,
-        fulfillmentStatus: payout.orderItem.fulfillmentStatus,
-        createdAt: payout.createdAt,
-      }] : []),
+      payouts: paidOrderItems.map((item) => ({
+        id: item.sellerPayout?.id ?? item.id,
+        orderId: item.orderId,
+        orderItemId: item.id,
+        title: item.title,
+        amountUsdCents: item.quantity * item.unitPriceCents - item.sellerFeeCents,
+        status: item.sellerPayout?.status ?? "NOT_TRACKED",
+        fulfillmentStatus: item.fulfillmentStatus,
+        createdAt: item.createdAt,
+      })),
     },
   });
 });

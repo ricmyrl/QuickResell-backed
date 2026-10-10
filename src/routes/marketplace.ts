@@ -326,8 +326,7 @@ router.get("/listings/:listingId/comments", optionalSupabaseUser, async (request
   response.json({ items: listing.comments.map(formatComment), commentsCount: listing._count.comments });
 });
 
-router.use("/feed", requireSupabaseUser);
-router.get("/feed", async (request, response) => {
+router.get("/feed", requireSupabaseUser, async (request, response) => {
   const requestedType = request.query.type;
   const feedType = typeof requestedType === "string" ? requestedType : "FOR_YOU";
   if (!feedTypes.includes(feedType as MarketplaceFeedType)) {
