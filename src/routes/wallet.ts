@@ -3,7 +3,7 @@ import axios from "axios";
 import { Router } from "express";
 import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
-import { usdToNgnKobo } from "../services/exchangeRates.js";
+import { ngnKoboToUsdCents } from "../services/exchangeRates.js";
 import { getPaystackCallbackUrl, getPaystackSecretKey } from "../services/paystack.js";
 import { finalizeWalletTopUp, WalletPaymentError } from "../services/walletPayments.js";
 
@@ -145,9 +145,9 @@ router.post("/wallet/topups/initialize", async (request, response) => {
     return;
   }
 
-  const amountCents = request.body?.amountCents;
-  if (!Number.isSafeInteger(amountCents) || amountCents < 100 || amountCents > 2_147_483_647) {
-    response.status(400).json({ error: "Enter a wallet deposit of at least $1.00 with no more than two decimal places." });
+  const amountKobo = request.body?.amountKobo;
+  if (!Number.isSafeInteger(amountKobo) || amountKobo < 100 || amountKobo > 2_147_483_647) {
+    response.status(400).json({ error: "Enter a wallet deposit of at least ₦1.00 with no more than two decimal places." });
     return;
   }
   if (!user.email) {
@@ -163,15 +163,19 @@ router.post("/wallet/topups/initialize", async (request, response) => {
     return;
   }
 
-  let paymentAmountKobo: number;
+  let walletAmountCents: number;
   try {
-    paymentAmountKobo = await usdToNgnKobo(amountCents / 100);
+    walletAmountCents = await ngnKoboToUsdCents(amountKobo);
   } catch {
     response.status(503).json({ error: "Payment is temporarily unavailable because exchange rates could not be loaded." });
     return;
   }
-  if (paymentAmountKobo > 2_147_483_647) {
-    response.status(400).json({ error: "This deposit amount is above the payment gateway limit." });
+  if (walletAmountCents < 100) {
+    response.status(400).json({ error: "This deposit is below the minimum wallet credit. Enter a larger amount in naira." });
+    return;
+  }
+  if (walletAmountCents > 2_147_483_647) {
+    response.status(400).json({ error: "This deposit exceeds the supported wallet balance limit." });
     return;
   }
 
@@ -181,7 +185,7 @@ router.post("/wallet/topups/initialize", async (request, response) => {
     update: {},
     select: { id: true, balanceCents: true },
   });
-  if (wallet.balanceCents + amountCents > 2_147_483_647) {
+  if (wallet.balanceCents + walletAmountCents > 2_147_483_647) {
     response.status(400).json({ error: "This deposit would exceed your wallet's maximum balance." });
     return;
   }
@@ -191,8 +195,8 @@ router.post("/wallet/topups/initialize", async (request, response) => {
     data: {
       walletId: wallet.id,
       paymentReference: reference,
-      amountCents,
-      paymentAmountKobo,
+      amountCents: walletAmountCents,
+      paymentAmountKobo: amountKobo,
     },
     select: { id: true },
   });
@@ -202,7 +206,7 @@ router.post("/wallet/topups/initialize", async (request, response) => {
       "https://api.paystack.co/transaction/initialize",
       {
         email: user.email,
-        amount: paymentAmountKobo,
+        amount: amountKobo,
         currency: "NGN",
         reference,
         callback_url: getPaystackCallbackUrl("WALLET_TOPUP"),
@@ -210,8 +214,8 @@ router.post("/wallet/topups/initialize", async (request, response) => {
           transactionType: "WALLET_TOPUP",
           walletTransactionId: transaction.id,
           userId: user.id,
-          amountUsdCents: amountCents,
-          paymentAmountKobo,
+          amountUsdCents: walletAmountCents,
+          paymentAmountKobo: amountKobo,
         },
       },
       {
@@ -238,7 +242,7 @@ router.post("/wallet/topups/initialize", async (request, response) => {
       authorization_url: data.authorization_url,
       access_code: data.access_code,
       reference,
-      amountCents: paymentAmountKobo,
+      amountKobo,
       currency: "NGN",
     });
   } catch (error: unknown) {

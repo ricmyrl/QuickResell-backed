@@ -33,3 +33,17 @@ export async function usdToNgnKobo(usdAmount: number): Promise<number> {
   if (!Number.isSafeInteger(koboAmount) || koboAmount <= 0) throw new Error("The converted payment amount is invalid.");
   return koboAmount;
 }
+
+export function convertNgnKoboToUsdCents(ngnKobo: number, ngnPerUsd: number): number {
+  if (!Number.isSafeInteger(ngnKobo) || ngnKobo <= 0) throw new Error("The NGN amount must be positive.");
+  if (!Number.isFinite(ngnPerUsd) || ngnPerUsd <= 0) throw new Error("A valid USD exchange rate is required.");
+  const usdCents = Math.round(ngnKobo / ngnPerUsd);
+  if (!Number.isSafeInteger(usdCents)) throw new Error("The converted wallet amount is invalid.");
+  return usdCents;
+}
+
+export async function ngnKoboToUsdCents(ngnKobo: number): Promise<number> {
+  if (!Number.isSafeInteger(ngnKobo) || ngnKobo <= 0) throw new Error("The NGN amount must be positive.");
+  const { rates } = await getExchangeRates();
+  return convertNgnKoboToUsdCents(ngnKobo, rates.NGN);
+}
