@@ -12,7 +12,8 @@
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:seed": "prisma db seed",
-    "payouts:reconcile:dry-run": "tsx src/scripts/sellerPayoutDryRun.ts"
+    "payouts:reconcile:dry-run": "tsx src/scripts/sellerPayoutDryRun.ts",
+    "payments:reconcile:pending": "tsx src/scripts/reconcilePendingPaystackPayments.ts"
   },
   "keywords": [],
   "author": "",
