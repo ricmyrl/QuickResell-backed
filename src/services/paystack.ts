@@ -29,6 +29,12 @@ export function asPaystackInteger(value: unknown): number | undefined {
   return undefined;
 }
 
+export function hasPaystackChargeAtLeast(expectedAmount: number, actualAmount: number): boolean {
+  return Number.isSafeInteger(expectedAmount)
+    && Number.isSafeInteger(actualAmount)
+    && actualAmount >= expectedAmount;
+}
+
 export function validatePayoutAmountKobo(amountKobo: number): number {
   if (!Number.isSafeInteger(amountKobo) || amountKobo <= 0) {
     throw new Error("The seller payout must be a positive whole-kobo amount.");

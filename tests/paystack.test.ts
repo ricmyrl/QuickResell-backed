@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
-import { asPaystackInteger, getPaystackCallbackUrl, getPaystackProviderErrorMessage, getPaystackSecretKey, normalizeNigerianIdentityNumber, normalizePaystackBanks, verifyPaystackWebhookSignature } from "../src/services/paystack.js";
+import { asPaystackInteger, getPaystackCallbackUrl, getPaystackProviderErrorMessage, getPaystackSecretKey, hasPaystackChargeAtLeast, normalizeNigerianIdentityNumber, normalizePaystackBanks, verifyPaystackWebhookSignature } from "../src/services/paystack.js";
 import { isWalletTopUpPaymentValid } from "../src/services/walletPayments.js";
 
 test("production requires a live Paystack secret key", () => {
@@ -132,4 +132,10 @@ test("wallet top-ups accept a successful Paystack charge that includes processin
     isWalletTopUpPaymentValid("QR-WALLET-6c594e5f-f8ef-4413-b578-033c44b8e615", { ...valid, amount: 39999 }, { id: "txn_123", amountCents: 40000, paymentAmountKobo: 40000, status: "PENDING" }, "user_123"),
     false,
   );
+});
+
+test("Paystack charges may exceed the expected order total when fees are included", () => {
+  assert.equal(hasPaystackChargeAtLeast(30613, 30613), true);
+  assert.equal(hasPaystackChargeAtLeast(30613, 30650), true);
+  assert.equal(hasPaystackChargeAtLeast(30613, 30000), false);
 });

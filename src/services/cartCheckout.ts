@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Post } from "../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
-import { asPaystackInteger, getPaystackErrorDiagnostics, verifyPaystackTransaction } from "./paystack.js";
+import { asPaystackInteger, getPaystackErrorDiagnostics, hasPaystackChargeAtLeast, verifyPaystackTransaction } from "./paystack.js";
 import { isAuctionPaymentOnTime } from "./auctionPaymentPolicy.js";
 import { getSellerPayoutNotification } from "./sellerPayouts.js";
 import { legacyUsdToNgnRate } from "./exchangeRates.js";
@@ -74,7 +74,7 @@ export async function verifyCartPayment(reference: string, buyerId: string): Pro
     || !cartItemIds.every((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 100)
     || new Set(cartItemIds).size !== cartItemIds.length
     || !Number.isSafeInteger(paymentAmountKobo)
-    || transactionAmount !== paymentAmountKobo) {
+    || !hasPaystackChargeAtLeast(paymentAmountKobo, transactionAmount)) {
     throw new CartPaymentError("The payment amount does not match the checkout total.", 402);
   }
 
