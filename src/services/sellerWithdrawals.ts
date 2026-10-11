@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
-import { initiateSellerPayout } from "./paystack.js";
+import { getPaystackErrorDiagnostics, initiateSellerPayout } from "./paystack.js";
 
 type WithdrawalStatus = "PROCESSING" | "SUCCESS" | "FAILED" | "REVERSED" | "REVIEW_REQUIRED";
 type TransferEvent = "transfer.success" | "transfer.failed" | "transfer.reversed" | "transfer.queued" | "transfer.processing";
@@ -198,7 +198,7 @@ export async function withdrawSellerEarnings(sellerId: string, amountKobo: numbe
     console.error("Seller wallet withdrawal requires manual Paystack reconciliation.", {
       sellerId,
       transferReference: reference,
-      error,
+      paystackError: getPaystackErrorDiagnostics(error),
     });
   }
 

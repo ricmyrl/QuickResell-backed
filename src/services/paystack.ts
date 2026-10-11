@@ -30,6 +30,21 @@ export function getPaystackProviderErrorMessage(error: unknown): string | undefi
     .slice(0, 240);
 }
 
+export function getPaystackErrorDiagnostics(error: unknown): {
+  status?: number;
+  code?: string;
+  message?: string;
+} {
+  if (!axios.isAxiosError<{ message?: unknown }>(error)) {
+    return { message: error instanceof Error ? error.message.slice(0, 240) : "Unknown Paystack error." };
+  }
+  return {
+    status: error.response?.status,
+    code: error.code,
+    message: getPaystackProviderErrorMessage(error),
+  };
+}
+
 const popularNigerianBankCodes = [
   "044", "011", "058", "033", "057", "070", "214",
   "221", "232", "035", "032", "076", "050", "082",

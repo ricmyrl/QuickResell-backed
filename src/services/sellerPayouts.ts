@@ -1,5 +1,5 @@
 import { prisma } from "../lib/prisma.js";
-import { initiateSellerPayout, verifySellerTransfer } from "./paystack.js";
+import { getPaystackErrorDiagnostics, initiateSellerPayout, verifySellerTransfer } from "./paystack.js";
 
 export type PayoutNotificationStatus = "BLOCKED" | "SUCCESS" | "FAILED" | "REVERSED" | "REVIEW_REQUIRED";
 
@@ -274,7 +274,7 @@ export async function cashOutSellerOrderItem(itemId: string, sellerId: string) {
       orderId: item.order.id,
       orderItemId: item.id,
       transferReference: payout.transferReference,
-      error,
+      paystackError: getPaystackErrorDiagnostics(error),
     });
   }
 
@@ -309,10 +309,17 @@ export async function reconcileSellerPayout(itemId: string, sellerId: string) {
     console.error("Paystack could not confirm a seller payout status.", {
       sellerId,
       orderItemId: itemId,
-      transferReference: payout.transferReference,
-      error,
+      paystackError: getPaystackErrorDiagnostics(error),
     });
-    throw new SellerCashoutError("Paystack could not confirm this transfer yet. Try checking again later; do not submit another cash-out.", 502);
+    const diagnostics = getPaystackErrorDiagnostics(error);
+    const message = diagnostics.status === 401 || diagnostics.status === 403
+      ? "Paystack rejected the server credentials. Support must check that the Paystack key matches the account and environment used for this transfer."
+      : diagnostics.status === 404
+        ? "Paystack could not find this transfer reference. Support must check the Paystack dashboard and account before any retry."
+        : diagnostics.status === 400 || diagnostics.status === 422
+          ? "Paystack rejected the transfer status request. Support must review the reference in the Paystack dashboard."
+          : "Paystack could not confirm the transfer yet. Try checking again later; do not submit another cash-out.";
+    throw new SellerCashoutError(message, 502);
   }
   if (typeof transfer.amount === "number" && payout.amountKobo !== null && transfer.amount !== payout.amountKobo) {
     console.error("Paystack transfer amount does not match the recorded seller payout.", {
