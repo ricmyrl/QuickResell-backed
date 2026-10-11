@@ -162,6 +162,14 @@ router.post("/payments/initialize", requirePasskeyVerification, async (request, 
   }
 
   try {
+    await prisma.paystackCheckout.create({
+      data: {
+        reference,
+        buyerId: buyer.id,
+        paymentAmountKobo: amountCents,
+        cartItemIds: eligibleItems.map((item) => item.id),
+      },
+    });
     const paystackResponse = await axios.post(
       "https://api.paystack.co/transaction/initialize",
       {

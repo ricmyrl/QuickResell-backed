@@ -129,6 +129,12 @@ export async function finalizeCartCheckout(
     });
     if (existingOrder) {
       if (existingOrder.buyerId !== buyerId) throw new CartPaymentError("This payment reference belongs to another account.", 409);
+      if (paymentMethod === "PAYSTACK") {
+        await transaction.paystackCheckout.updateMany({
+          where: { reference: checkoutReference, buyerId, status: "PENDING" },
+          data: { status: "COMPLETED" },
+        });
+      }
       return existingOrder;
     }
 
@@ -255,6 +261,12 @@ export async function finalizeCartCheckout(
       },
       include: { items: true },
     });
+    if (paymentMethod === "PAYSTACK") {
+      await transaction.paystackCheckout.updateMany({
+        where: { reference: checkoutReference, buyerId, status: "PENDING" },
+        data: { status: "COMPLETED" },
+      });
+    }
     if (walletId) {
       await transaction.walletTransaction.create({
         data: {

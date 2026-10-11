@@ -5,7 +5,7 @@ import { verifyPaystackTransaction } from "../services/paystack.js";
 import { finalizeWalletTopUp } from "../services/walletPayments.js";
 
 type ReconciliationEntry = {
-  type: "order" | "wallet";
+  type: "order" | "checkout" | "wallet";
   reference: string;
   buyerId?: string;
   userId?: string;
@@ -28,6 +28,23 @@ export async function reconcilePendingPaystackReferences(): Promise<{ processed:
       type: "wallet",
       reference: transaction.paymentReference,
       userId: transaction.wallet.userId,
+    });
+  }
+
+  const pendingCheckouts = await prisma.paystackCheckout.findMany({
+    where: { status: "PENDING" },
+    select: {
+      buyerId: true,
+      reference: true,
+    },
+  });
+
+  for (const checkout of pendingCheckouts) {
+    if (queue.has(checkout.reference)) continue;
+    queue.set(checkout.reference, {
+      type: "checkout",
+      reference: checkout.reference,
+      buyerId: checkout.buyerId,
     });
   }
 

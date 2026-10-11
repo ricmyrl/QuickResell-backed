@@ -91,6 +91,13 @@ enum WalletTransactionStatus {
   FAILED
 }
 
+enum PaystackCheckoutStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REVIEW_REQUIRED
+}
+
 enum WalletTransactionType {
   TOP_UP
   PURCHASE
@@ -162,6 +169,7 @@ model User {
   scoutFeedback           ScoutFeedback[]
   supportRequests         SupportRequest[]
   purchaseOrders          PurchaseOrder[]
+  paystackCheckouts       PaystackCheckout[]
   wallet                  Wallet?
   soldOrderItems          PurchaseOrderItem[]
   sellerPayouts           SellerPayout[]
@@ -511,6 +519,21 @@ model PurchaseOrder {
   @@index([buyerId, createdAt])
   @@index([status, createdAt])
   @@index([status, updatedAt])
+}
+
+model PaystackCheckout {
+  id                String                 @id @default(cuid())
+  reference         String                 @unique
+  buyerId           String                 @db.Uuid
+  paymentAmountKobo Int
+  cartItemIds       String[]
+  status            PaystackCheckoutStatus @default(PENDING)
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+  buyer             User                   @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([buyerId, createdAt])
 }
 
 model PurchaseOrderItem {
