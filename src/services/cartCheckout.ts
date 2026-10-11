@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Post } from "../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
-import { verifyPaystackTransaction } from "./paystack.js";
+import { asPaystackInteger, getPaystackErrorDiagnostics, verifyPaystackTransaction } from "./paystack.js";
 import { isAuctionPaymentOnTime } from "./auctionPaymentPolicy.js";
 import { getSellerPayoutNotification } from "./sellerPayouts.js";
 import { legacyUsdToNgnRate } from "./exchangeRates.js";
@@ -25,8 +25,27 @@ export async function verifyCartPayment(reference: string, buyerId: string): Pro
   let transaction;
   try {
     transaction = await verifyPaystackTransaction(reference);
-  } catch {
-    throw new CartPaymentError("Paystack verification is temporarily unavailable.", 502);
+  } catch (error) {
+    const diagnostics = getPaystackErrorDiagnostics(error);
+    console.error("Paystack could not verify buyer checkout.", {
+      buyerId,
+      reference,
+      paystackError: diagnostics,
+    });
+    const message = diagnostics.status === 401 || diagnostics.status === 403
+      ? "Paystack rejected the server credentials while confirming this payment. Contact support with your payment reference."
+      : diagnostics.status === 404
+        ? "Paystack could not find this payment reference yet. If your bank confirms the charge, contact support with the reference before paying again."
+        : diagnostics.status === 429
+          ? "Paystack is temporarily rate-limiting payment checks. Wait a few minutes and retry confirmation; do not pay again."
+          : diagnostics.status !== undefined && diagnostics.status >= 500
+            ? "Paystack is temporarily unavailable. Wait a few minutes and retry confirmation; do not pay again."
+            : diagnostics.code === "ECONNABORTED" || diagnostics.code === "ETIMEDOUT"
+              ? "The Paystack confirmation timed out. Wait a few minutes and retry confirmation; do not pay again."
+              : diagnostics.status === undefined
+                ? "The server could not reach Paystack to confirm this payment. Contact support with your payment reference."
+                : `Paystack could not confirm this payment (HTTP ${diagnostics.status}). Contact support with your payment reference.`;
+    throw new CartPaymentError(message, 502);
   }
 
   if (transaction.status !== "success"
@@ -38,15 +57,16 @@ export async function verifyCartPayment(reference: string, buyerId: string): Pro
   }
 
   const legacyCurrency = transaction.metadata.subtotalKobo === undefined;
-  const subtotalCents = Number(legacyCurrency
+  const subtotalCents = asPaystackInteger(legacyCurrency
     ? transaction.metadata.paymentAmountKobo
-    : transaction.metadata.subtotalKobo);
-  const legacySubtotalUsdCents = Number(transaction.metadata.subtotalUsdCents);
+    : transaction.metadata.subtotalKobo) ?? NaN;
+  const legacySubtotalUsdCents = asPaystackInteger(transaction.metadata.subtotalUsdCents);
   const cartItemIds: unknown = transaction.metadata.cartItemIds;
-  const paymentAmountKobo = Number(transaction.metadata.paymentAmountKobo);
+  const paymentAmountKobo = asPaystackInteger(transaction.metadata.paymentAmountKobo) ?? NaN;
+  const transactionAmount = asPaystackInteger(transaction.amount) ?? NaN;
   if (!Number.isSafeInteger(subtotalCents)
     || subtotalCents <= 0
-    || (legacyCurrency && (!Number.isSafeInteger(legacySubtotalUsdCents) || legacySubtotalUsdCents <= 0))
+    || (legacyCurrency && (!Number.isSafeInteger(legacySubtotalUsdCents ?? NaN) || (legacySubtotalUsdCents ?? 0) <= 0))
     || (!legacyCurrency && subtotalCents !== paymentAmountKobo)
     || !Array.isArray(cartItemIds)
     || cartItemIds.length === 0
@@ -54,7 +74,7 @@ export async function verifyCartPayment(reference: string, buyerId: string): Pro
     || !cartItemIds.every((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 100)
     || new Set(cartItemIds).size !== cartItemIds.length
     || !Number.isSafeInteger(paymentAmountKobo)
-    || transaction.amount !== paymentAmountKobo) {
+    || transactionAmount !== paymentAmountKobo) {
     throw new CartPaymentError("The payment amount does not match the checkout total.", 402);
   }
 

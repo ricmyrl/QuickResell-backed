@@ -3,7 +3,7 @@ import axios from "axios";
 import { Router } from "express";
 import { requireConfirmedEmail, requirePasskeyVerification, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
-import { getPaystackCallbackUrl, getPaystackSecretKey, verifyPaystackTransaction } from "../services/paystack.js";
+import { asPaystackInteger, getPaystackCallbackUrl, getPaystackSecretKey, verifyPaystackTransaction } from "../services/paystack.js";
 import { auctionPaymentGraceMs } from "../services/auctionPaymentPolicy.js";
 
 const router = Router();
@@ -222,12 +222,16 @@ router.get("/payments/verify/:reference", async (request, response) => {
 
   try {
     const data = await verifyPaystackTransaction(reference);
+    const paidAmount = asPaystackInteger(data.amount);
+    const expectedAmount = asPaystackInteger(data.metadata?.paymentAmountKobo);
     if (data.status !== "success"
       || data.reference !== reference
       || data.currency !== "NGN"
       || data.metadata?.transactionType !== "CART_CHECKOUT"
       || data.metadata?.userId !== buyer.id
-      || data.amount !== Number(data.metadata?.paymentAmountKobo)) {
+      || paidAmount === undefined
+      || expectedAmount === undefined
+      || paidAmount !== expectedAmount) {
       response.status(400).json({ error: "Payment could not be verified for this account." });
       return;
     }

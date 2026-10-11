@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
-import { getPaystackCallbackUrl, getPaystackProviderErrorMessage, getPaystackSecretKey, normalizeNigerianIdentityNumber, normalizePaystackBanks, verifyPaystackWebhookSignature } from "../src/services/paystack.js";
+import { asPaystackInteger, getPaystackCallbackUrl, getPaystackProviderErrorMessage, getPaystackSecretKey, normalizeNigerianIdentityNumber, normalizePaystackBanks, verifyPaystackWebhookSignature } from "../src/services/paystack.js";
 
 test("production requires a live Paystack secret key", () => {
   assert.equal(getPaystackSecretKey({ NODE_ENV: "development", PAYSTACK_SECRET_KEY: "sk_test_example" }), "sk_test_example");
@@ -96,4 +96,13 @@ test("Paystack bank list puts popular commercial banks first and sorts the rest 
       { name: "Other Bank", code: "999001" },
     ],
   );
+});
+
+test("Paystack integer values are normalized before verification checks", () => {
+  assert.equal(asPaystackInteger(2500), 2500);
+  assert.equal(asPaystackInteger("2500"), 2500);
+  assert.equal(asPaystackInteger("2500.00"), 2500);
+  assert.equal(asPaystackInteger(" 2500 "), 2500);
+  assert.equal(asPaystackInteger("abc"), undefined);
+  assert.equal(asPaystackInteger(null), undefined);
 });

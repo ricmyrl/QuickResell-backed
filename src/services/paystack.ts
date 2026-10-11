@@ -12,6 +12,23 @@ export type PaystackTransaction = {
 
 export type PaystackBank = { name: string; code: string };
 
+export function asPaystackInteger(value: unknown): number | undefined {
+  if (typeof value === "bigint") {
+    const normalized = Number(value);
+    return Number.isSafeInteger(normalized) ? normalized : undefined;
+  }
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) ? value : undefined;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().replace(/,/g, "");
+    if (!normalized) return undefined;
+    const parsed = Number(normalized); 
+    return Number.isFinite(parsed) && Number.isSafeInteger(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
 export function validatePayoutAmountKobo(amountKobo: number): number {
   if (!Number.isSafeInteger(amountKobo) || amountKobo <= 0) {
     throw new Error("The seller payout must be a positive whole-kobo amount.");

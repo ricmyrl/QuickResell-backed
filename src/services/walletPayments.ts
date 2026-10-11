@@ -1,5 +1,5 @@
 import { prisma } from "../lib/prisma.js";
-import { verifyPaystackTransaction } from "./paystack.js";
+import { asPaystackInteger, verifyPaystackTransaction } from "./paystack.js";
 
 export class WalletPaymentError extends Error {
   constructor(message: string, readonly status: number) {
@@ -22,19 +22,26 @@ export async function finalizeWalletTopUp(reference: string, userId: string): Pr
   } catch {
     throw new WalletPaymentError("Paystack verification is temporarily unavailable.", 502);
   }
+  const paymentAmount = asPaystackInteger(payment.amount);
+  const expectedAmount = asPaystackInteger(transaction.paymentAmountKobo);
+  const metadataAmountKobo = asPaystackInteger(payment.metadata?.amountKobo);
+  const metadataPaymentAmountKobo = asPaystackInteger(payment.metadata?.paymentAmountKobo);
+  const metadataAmountUsdCents = asPaystackInteger(payment.metadata?.amountUsdCents);
   if (payment.status !== "success"
     || payment.reference !== reference
     || payment.currency !== "NGN"
-    || payment.amount !== transaction.paymentAmountKobo
+    || paymentAmount === undefined
+    || expectedAmount === undefined
+    || paymentAmount !== expectedAmount
     || payment.metadata?.transactionType !== "WALLET_TOPUP"
     || payment.metadata.walletTransactionId !== transaction.id
     || payment.metadata.userId !== userId
-    || (payment.metadata.amountKobo !== transaction.amountCents
+    || ((metadataAmountKobo ?? NaN) !== transaction.amountCents
       && !(transaction.status === "PENDING"
-        ? payment.metadata.amountUsdCents === transaction.amountCents
-        : Number.isSafeInteger(payment.metadata.amountUsdCents)
+        ? (metadataAmountUsdCents ?? NaN) === transaction.amountCents
+        : Number.isSafeInteger(metadataAmountUsdCents)
           && transaction.amountCents === transaction.paymentAmountKobo))
-    || payment.metadata.paymentAmountKobo !== transaction.paymentAmountKobo) {
+    || (metadataPaymentAmountKobo ?? NaN) !== transaction.paymentAmountKobo) {
     throw new WalletPaymentError("Payment could not be verified for this wallet deposit.", 402);
   }
 
