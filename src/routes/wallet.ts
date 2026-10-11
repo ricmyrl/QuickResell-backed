@@ -76,6 +76,7 @@ router.get("/wallet", async (request, response) => {
       pendingFulfillmentCents: bigint;
       readyForCashoutCents: bigint;
       paidOutCents: bigint;
+      legacyReconciliationCents: bigint;
     }>>`
       SELECT
         COALESCE(SUM(item."quantity"::bigint * item."unitPriceCents"::bigint - item."sellerFeeCents"::bigint), 0)::bigint AS "earnedCents",
@@ -117,7 +118,16 @@ router.get("/wallet", async (request, response) => {
             AND withdrawal."status" = 'SUCCESS'
             AND allocated_order."paymentReference" IS NOT NULL
             AND allocated_order."status" <> 'CANCELLED'
-        ), 0)::bigint AS "paidOutCents"
+        ), 0)::bigint AS "paidOutCents",
+        COALESCE(SUM(CASE
+          WHEN payout."id" IS NULL
+            AND item."fulfillmentStatus" IN ('READY_FOR_PICKUP', 'SHIPPED', 'COMPLETED')
+          THEN GREATEST(
+            item."quantity"::bigint * item."unitPriceCents"::bigint - item."sellerFeeCents"::bigint,
+            0
+          )
+          ELSE 0
+        END), 0)::bigint AS "legacyReconciliationCents"
       FROM "PurchaseOrderItem" item
       INNER JOIN "PurchaseOrder" orders ON orders."id" = item."orderId"
       LEFT JOIN "SellerPayout" payout ON payout."orderItemId" = item."id"
@@ -159,6 +169,7 @@ router.get("/wallet", async (request, response) => {
       pendingFulfillmentCents: cents(earningsSummary.pendingFulfillmentCents),
       readyForCashoutCents: cents(earningsSummary.readyForCashoutCents),
       paidOutCents: cents(earningsSummary.paidOutCents),
+      legacyReconciliationCents: cents(earningsSummary.legacyReconciliationCents),
       payoutAccountVerified: payoutAccount?.payoutStatus === "VERIFIED"
         && Boolean(payoutAccount.bankAccountNumber)
         && Boolean(payoutAccount.bankAccountName)
