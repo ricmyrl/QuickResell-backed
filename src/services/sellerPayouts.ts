@@ -185,6 +185,17 @@ export async function cashOutSellerOrderItem(itemId: string, sellerId: string) {
     });
     if (payoutClaim.count !== 1) return false;
 
+    const withdrawalAllocation = await transaction.sellerWithdrawalAllocation.findFirst({
+      where: {
+        sellerPayoutId: payout.id,
+        withdrawal: { status: { in: ["PROCESSING", "SUCCESS", "REVIEW_REQUIRED"] } },
+      },
+      select: { id: true },
+    });
+    if (withdrawalAllocation) {
+      throw new SellerCashoutError("Part of this sale is already included in a wallet withdrawal. Refresh your wallet before cashing out the sale.", 409);
+    }
+
     const walletDebit = await transaction.wallet.updateMany({
       where: { userId: sellerId, balanceCents: { gte: payout.amountCents } },
       data: { balanceCents: { decrement: payout.amountCents } },

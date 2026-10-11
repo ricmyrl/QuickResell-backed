@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import axios from "axios";
 import { Router } from "express";
-import { requireConfirmedEmail, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
+import { requireConfirmedEmail, requirePasskeyVerification, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
 import { getPaystackCallbackUrl, getPaystackSecretKey } from "../services/paystack.js";
 import { finalizeWalletTopUp, WalletPaymentError } from "../services/walletPayments.js";
+import { SellerWithdrawalError, withdrawSellerEarnings } from "../services/sellerWithdrawals.js";
 
 const router = Router();
 
@@ -87,14 +88,32 @@ router.get("/wallet", async (request, response) => {
           WHEN payout."status" IN ('PENDING', 'BLOCKED')
             AND item."fulfillmentStatus" IN ('READY_FOR_PICKUP', 'SHIPPED', 'COMPLETED')
             AND payout."orderItemId" IS NOT NULL
-          THEN item."quantity"::bigint * item."unitPriceCents"::bigint - item."sellerFeeCents"::bigint
+          THEN GREATEST(
+            item."quantity"::bigint * item."unitPriceCents"::bigint - item."sellerFeeCents"::bigint
+            - COALESCE((
+              SELECT SUM(allocation."amountCents"::bigint)
+              FROM "SellerWithdrawalAllocation" allocation
+              INNER JOIN "SellerWithdrawal" withdrawal ON withdrawal."id" = allocation."withdrawalId"
+              WHERE allocation."sellerPayoutId" = payout."id"
+                AND withdrawal."status" IN ('PROCESSING', 'SUCCESS', 'REVIEW_REQUIRED')
+            ), 0),
+            0
+          )
           ELSE 0
         END), 0)::bigint AS "readyForCashoutCents",
         COALESCE(SUM(CASE
           WHEN payout."status" = 'SUCCESS' AND payout."orderItemId" IS NOT NULL
           THEN item."quantity"::bigint * item."unitPriceCents"::bigint - item."sellerFeeCents"::bigint
           ELSE 0
-        END), 0)::bigint AS "paidOutCents"
+        END), 0)::bigint
+        + COALESCE((
+          SELECT SUM(allocation."amountCents"::bigint)
+          FROM "SellerWithdrawalAllocation" allocation
+          INNER JOIN "SellerWithdrawal" withdrawal ON withdrawal."id" = allocation."withdrawalId"
+          INNER JOIN "SellerPayout" allocated_payout ON allocated_payout."id" = allocation."sellerPayoutId"
+          WHERE allocated_payout."orderItemId" = item."id"
+            AND withdrawal."status" = 'SUCCESS'
+        ), 0)::bigint AS "paidOutCents"
       FROM "PurchaseOrderItem" item
       INNER JOIN "PurchaseOrder" orders ON orders."id" = item."orderId"
       LEFT JOIN "SellerPayout" payout ON payout."orderItemId" = item."id"
@@ -103,6 +122,23 @@ router.get("/wallet", async (request, response) => {
         AND orders."status" <> 'CANCELLED'
     `,
   ]);
+  const payoutIds = paidOrderItems.flatMap((item) => item.sellerPayout ? [item.sellerPayout.id] : []);
+  const withdrawalAllocations = payoutIds.length > 0
+    ? await prisma.sellerWithdrawalAllocation.findMany({
+      where: {
+        sellerPayoutId: { in: payoutIds },
+        withdrawal: { status: { in: ["PROCESSING", "SUCCESS", "REVIEW_REQUIRED"] } },
+      },
+      select: { sellerPayoutId: true, amountCents: true },
+    })
+    : [];
+  const withdrawnByPayout = new Map<string, number>();
+  for (const allocation of withdrawalAllocations) {
+    withdrawnByPayout.set(
+      allocation.sellerPayoutId,
+      (withdrawnByPayout.get(allocation.sellerPayoutId) ?? 0) + allocation.amountCents,
+    );
+  }
   const earningsSummary = earnings[0];
   if (!earningsSummary) throw new Error("Seller earnings could not be summarized.");
   const cents = (value: bigint): number => {
@@ -132,9 +168,34 @@ router.get("/wallet", async (request, response) => {
         status: item.sellerPayout?.status ?? "NOT_TRACKED",
         fulfillmentStatus: item.fulfillmentStatus,
         createdAt: item.createdAt,
+        withdrawnCents: item.sellerPayout ? withdrawnByPayout.get(item.sellerPayout.id) ?? 0 : 0,
       })),
     },
   });
+});
+
+router.post("/wallet/withdrawals", requirePasskeyVerification, async (request, response) => {
+  const user = (request as AuthenticatedRequest).marketplaceUser;
+  if (!user) {
+    response.status(401).json({ error: "Unauthorized." });
+    return;
+  }
+  const amountKobo = request.body?.amountKobo;
+  if (!Number.isSafeInteger(amountKobo) || amountKobo <= 0 || amountKobo > 2_147_483_647) {
+    response.status(400).json({ error: "Enter a valid withdrawal amount in naira with up to two decimal places." });
+    return;
+  }
+
+  try {
+    const withdrawal = await withdrawSellerEarnings(user.id, amountKobo);
+    response.json({ withdrawal });
+  } catch (error) {
+    if (error instanceof SellerWithdrawalError) {
+      response.status(error.status).json({ error: error.message });
+      return;
+    }
+    throw error;
+  }
 });
 
 router.post("/wallet/topups/initialize", async (request, response) => {

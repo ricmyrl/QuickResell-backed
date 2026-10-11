@@ -2,6 +2,7 @@ import express, { Router } from "express";
 import { CartPaymentError, finalizeCartCheckout } from "../services/cartCheckout.js";
 import { getPaystackSecretKey, verifyPaystackWebhookSignature } from "../services/paystack.js";
 import { applyPaystackTransferEvent } from "../services/sellerPayouts.js";
+import { applyPaystackWithdrawalEvent } from "../services/sellerWithdrawals.js";
 import { finalizeWalletTopUp, WalletPaymentError } from "../services/walletPayments.js";
 
 const router = Router();
@@ -55,13 +56,20 @@ router.post("/paystack/webhook", express.raw({ type: "application/json", limit: 
       return;
     }
     try {
-      const updated = await applyPaystackTransferEvent(
+      let updated = await applyPaystackTransferEvent(
         reference,
         event.event as typeof transferEvents[number],
         typeof transferCode === "string" ? transferCode : undefined,
       );
       if (!updated) {
-        console.error("Paystack transfer event did not match a QuickResell payout.", { reference, event: event.event });
+        updated = await applyPaystackWithdrawalEvent(
+          reference,
+          event.event as typeof transferEvents[number],
+          typeof transferCode === "string" ? transferCode : undefined,
+        );
+      }
+      if (!updated) {
+        console.error("Paystack transfer event did not match a QuickResell payout or withdrawal.", { reference, event: event.event });
       }
     } catch (error) {
       console.error("Paystack transfer event could not be recorded.", { reference, event: event.event, error });
