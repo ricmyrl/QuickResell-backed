@@ -127,7 +127,7 @@ const paystackReconciliationTimer = setInterval(() => {
   void reconcilePendingPaystackReferences().catch((error: unknown) => {
     console.error("Failed to reconcile pending Paystack references.", error);
   });
-}, 5 * 60_000);
+}, 3 * 60_000);
 
 app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => {
   const requestId = typeof response.locals.requestId === "string" ? response.locals.requestId : randomUUID();
