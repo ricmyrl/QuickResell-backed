@@ -140,7 +140,7 @@ router.get("/wallet", async (request, response) => {
       where: { sellerId: user.id },
       orderBy: { createdAt: "desc" },
       take: 10,
-      select: { id: true, amountKobo: true, status: true, createdAt: true, updatedAt: true },
+      select: { id: true, amountKobo: true, transferReference: true, status: true, createdAt: true, updatedAt: true },
     }),
   ]);
   const payoutIds = paidOrderItems.flatMap((item) => item.sellerPayout ? [item.sellerPayout.id] : []);

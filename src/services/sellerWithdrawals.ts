@@ -205,7 +205,7 @@ export async function withdrawSellerEarnings(sellerId: string, amountKobo: numbe
 
   return prisma.sellerWithdrawal.findUniqueOrThrow({
     where: { id: withdrawal.id },
-    select: { id: true, status: true, amountKobo: true, updatedAt: true, completedAt: true },
+    select: { id: true, status: true, amountKobo: true, transferReference: true, updatedAt: true, completedAt: true },
   });
 }
 
@@ -272,7 +272,7 @@ export async function reconcileSellerWithdrawal(withdrawalId: string, sellerId: 
   });
   return prisma.sellerWithdrawal.findUniqueOrThrow({
     where: { id: withdrawal.id },
-    select: { id: true, status: true, amountKobo: true, updatedAt: true, completedAt: true },
+    select: { id: true, status: true, amountKobo: true, transferReference: true, updatedAt: true, completedAt: true },
   });
 }
 
