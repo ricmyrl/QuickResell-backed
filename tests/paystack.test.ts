@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
 import { asPaystackInteger, getPaystackCallbackUrl, getPaystackProviderErrorMessage, getPaystackSecretKey, normalizeNigerianIdentityNumber, normalizePaystackBanks, verifyPaystackWebhookSignature } from "../src/services/paystack.js";
+import { isWalletTopUpPaymentValid } from "../src/services/walletPayments.js";
 
 test("production requires a live Paystack secret key", () => {
   assert.equal(getPaystackSecretKey({ NODE_ENV: "development", PAYSTACK_SECRET_KEY: "sk_test_example" }), "sk_test_example");
@@ -105,4 +106,30 @@ test("Paystack integer values are normalized before verification checks", () => 
   assert.equal(asPaystackInteger(" 2500 "), 2500);
   assert.equal(asPaystackInteger("abc"), undefined);
   assert.equal(asPaystackInteger(null), undefined);
+});
+
+test("wallet top-ups accept a successful Paystack charge that includes processing fees", () => {
+  const valid = {
+    status: "success",
+    reference: "QR-WALLET-6c594e5f-f8ef-4413-b578-033c44b8e615",
+    currency: "NGN",
+    amount: 40610,
+    metadata: {
+      transactionType: "WALLET_TOPUP",
+      walletTransactionId: "txn_123",
+      userId: "user_123",
+      amountKobo: 40000,
+      paymentAmountKobo: 40000,
+    },
+  };
+
+  assert.equal(
+    isWalletTopUpPaymentValid("QR-WALLET-6c594e5f-f8ef-4413-b578-033c44b8e615", valid, { id: "txn_123", amountCents: 40000, paymentAmountKobo: 40000, status: "PENDING" }, "user_123"),
+    true,
+  );
+
+  assert.equal(
+    isWalletTopUpPaymentValid("QR-WALLET-6c594e5f-f8ef-4413-b578-033c44b8e615", { ...valid, amount: 39999 }, { id: "txn_123", amountCents: 40000, paymentAmountKobo: 40000, status: "PENDING" }, "user_123"),
+    false,
+  );
 });

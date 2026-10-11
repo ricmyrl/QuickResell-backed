@@ -8,6 +8,50 @@ export class WalletPaymentError extends Error {
   }
 }
 
+export function isWalletTopUpPaymentValid(
+  reference: string,
+  payment: {
+    status?: unknown;
+    reference?: unknown;
+    currency?: unknown;
+    amount?: unknown;
+    metadata?: Record<string, unknown>;
+  },
+  transaction: {
+    id: string;
+    amountCents: number;
+    paymentAmountKobo: number | null;
+    status: "PENDING" | "COMPLETED" | "FAILED";
+  },
+  userId: string,
+): boolean {
+  const paymentAmount = asPaystackInteger(payment.amount);
+  const expectedAmount = asPaystackInteger(transaction.paymentAmountKobo ?? transaction.amountCents);
+  const metadataAmountKobo = asPaystackInteger(payment.metadata?.amountKobo);
+  const metadataPaymentAmountKobo = asPaystackInteger(payment.metadata?.paymentAmountKobo);
+  const metadataAmountUsdCents = asPaystackInteger(payment.metadata?.amountUsdCents);
+  const requestedAmount = transaction.paymentAmountKobo ?? transaction.amountCents;
+
+  return payment.status === "success"
+    && payment.reference === reference
+    && payment.currency === "NGN"
+    && paymentAmount !== undefined
+    && expectedAmount !== undefined
+    && paymentAmount >= expectedAmount
+    && payment.metadata?.transactionType === "WALLET_TOPUP"
+    && payment.metadata.walletTransactionId === transaction.id
+    && payment.metadata.userId === userId
+    && (
+      (metadataAmountKobo ?? NaN) === transaction.amountCents
+      || (metadataPaymentAmountKobo ?? NaN) === requestedAmount
+      || (transaction.status === "PENDING"
+        && (metadataAmountUsdCents ?? NaN) === transaction.amountCents)
+      || (transaction.status !== "PENDING"
+        && Number.isSafeInteger(metadataAmountUsdCents)
+        && transaction.amountCents === transaction.paymentAmountKobo)
+    );
+}
+
 export async function finalizeWalletTopUp(reference: string, userId: string): Promise<number> {
   const transaction = await prisma.walletTransaction.findFirst({
     where: { paymentReference: reference, wallet: { userId } },
@@ -22,26 +66,13 @@ export async function finalizeWalletTopUp(reference: string, userId: string): Pr
   } catch {
     throw new WalletPaymentError("Paystack verification is temporarily unavailable.", 502);
   }
-  const paymentAmount = asPaystackInteger(payment.amount);
-  const expectedAmount = asPaystackInteger(transaction.paymentAmountKobo);
-  const metadataAmountKobo = asPaystackInteger(payment.metadata?.amountKobo);
-  const metadataPaymentAmountKobo = asPaystackInteger(payment.metadata?.paymentAmountKobo);
-  const metadataAmountUsdCents = asPaystackInteger(payment.metadata?.amountUsdCents);
-  if (payment.status !== "success"
-    || payment.reference !== reference
-    || payment.currency !== "NGN"
-    || paymentAmount === undefined
-    || expectedAmount === undefined
-    || paymentAmount !== expectedAmount
-    || payment.metadata?.transactionType !== "WALLET_TOPUP"
-    || payment.metadata.walletTransactionId !== transaction.id
-    || payment.metadata.userId !== userId
-    || ((metadataAmountKobo ?? NaN) !== transaction.amountCents
-      && !(transaction.status === "PENDING"
-        ? (metadataAmountUsdCents ?? NaN) === transaction.amountCents
-        : Number.isSafeInteger(metadataAmountUsdCents)
-          && transaction.amountCents === transaction.paymentAmountKobo))
-    || (metadataPaymentAmountKobo ?? NaN) !== transaction.paymentAmountKobo) {
+
+  if (!isWalletTopUpPaymentValid(reference, payment, {
+    id: transaction.id,
+    amountCents: transaction.amountCents,
+    paymentAmountKobo: transaction.paymentAmountKobo,
+    status: transaction.status,
+  }, userId)) {
     throw new WalletPaymentError("Payment could not be verified for this wallet deposit.", 402);
   }
 
