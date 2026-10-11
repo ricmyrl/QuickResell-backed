@@ -5,7 +5,7 @@ import { requireConfirmedEmail, requirePasskeyVerification, requireSupabaseUser,
 import { prisma } from "../lib/prisma.js";
 import { getPaystackCallbackUrl, getPaystackSecretKey } from "../services/paystack.js";
 import { finalizeWalletTopUp, WalletPaymentError } from "../services/walletPayments.js";
-import { SellerWithdrawalError, withdrawSellerEarnings } from "../services/sellerWithdrawals.js";
+import { reconcileSellerWithdrawal, SellerWithdrawalError, withdrawSellerEarnings } from "../services/sellerWithdrawals.js";
 
 const router = Router();
 
@@ -42,6 +42,7 @@ router.get("/wallet", async (request, response) => {
     wallet,
     payoutAccount,
     earnings,
+    withdrawals,
   ] = await Promise.all([
     prisma.wallet.findUnique({
       where: { userId: user.id },
@@ -135,6 +136,12 @@ router.get("/wallet", async (request, response) => {
         AND orders."paymentReference" IS NOT NULL
         AND orders."status" <> 'CANCELLED'
     `,
+    prisma.sellerWithdrawal.findMany({
+      where: { sellerId: user.id },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+      select: { id: true, amountKobo: true, status: true, createdAt: true, updatedAt: true },
+    }),
   ]);
   const payoutIds = paidOrderItems.flatMap((item) => item.sellerPayout ? [item.sellerPayout.id] : []);
   const withdrawalAllocations = payoutIds.length > 0
@@ -164,6 +171,7 @@ router.get("/wallet", async (request, response) => {
   response.json({
     balanceCents: wallet?.balanceCents ?? 0,
     transactions: wallet?.transactions ?? [],
+    withdrawals,
     sellerEarnings: {
       earnedCents: cents(earningsSummary.earnedCents),
       pendingFulfillmentCents: cents(earningsSummary.pendingFulfillmentCents),
@@ -203,6 +211,29 @@ router.post("/wallet/withdrawals", requirePasskeyVerification, async (request, r
 
   try {
     const withdrawal = await withdrawSellerEarnings(user.id, amountKobo);
+    response.json({ withdrawal });
+  } catch (error) {
+    if (error instanceof SellerWithdrawalError) {
+      response.status(error.status).json({ error: error.message });
+      return;
+    }
+    throw error;
+  }
+});
+
+router.post("/wallet/withdrawals/:withdrawalId/reconcile", async (request, response) => {
+  const user = (request as AuthenticatedRequest).marketplaceUser;
+  if (!user) {
+    response.status(401).json({ error: "Unauthorized." });
+    return;
+  }
+  const withdrawalId = request.params.withdrawalId;
+  if (typeof withdrawalId !== "string" || !withdrawalId.trim()) {
+    response.status(400).json({ error: "A valid withdrawal ID is required." });
+    return;
+  }
+  try {
+    const withdrawal = await reconcileSellerWithdrawal(withdrawalId, user.id);
     response.json({ withdrawal });
   } catch (error) {
     if (error instanceof SellerWithdrawalError) {

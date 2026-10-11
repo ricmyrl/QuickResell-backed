@@ -318,7 +318,15 @@ export async function reconcileSellerPayout(itemId: string, sellerId: string) {
         ? "Paystack could not find this transfer reference. Support must check the Paystack dashboard and account before any retry."
         : diagnostics.status === 400 || diagnostics.status === 422
           ? "Paystack rejected the transfer status request. Support must review the reference in the Paystack dashboard."
-          : "Paystack could not confirm the transfer yet. Try checking again later; do not submit another cash-out.";
+          : diagnostics.status === 429
+            ? "Paystack is rate-limiting status checks. Wait a few minutes and check again; do not submit another cash-out."
+            : diagnostics.status !== undefined && diagnostics.status >= 500
+              ? "Paystack is temporarily unavailable. Wait a few minutes and check again; do not submit another cash-out."
+              : diagnostics.code === "ECONNABORTED" || diagnostics.code === "ETIMEDOUT"
+                ? "The Paystack status check timed out. Wait a few minutes and check again; do not submit another cash-out."
+                : diagnostics.status === undefined
+                  ? "The server could not reach Paystack to check this transfer. Support must check the backend connection and Paystack dashboard; do not submit another cash-out."
+                  : `Paystack status check failed (HTTP ${diagnostics.status}). Contact support with the request reference; do not submit another cash-out.`;
     throw new SellerCashoutError(message, 502);
   }
   if (typeof transfer.amount === "number" && payout.amountKobo !== null && transfer.amount !== payout.amountKobo) {

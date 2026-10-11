@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
-import { getPaystackErrorDiagnostics, initiateSellerPayout } from "./paystack.js";
+import { getPaystackErrorDiagnostics, initiateSellerPayout, verifySellerTransfer } from "./paystack.js";
 
 type WithdrawalStatus = "PROCESSING" | "SUCCESS" | "FAILED" | "REVERSED" | "REVIEW_REQUIRED";
 type TransferEvent = "transfer.success" | "transfer.failed" | "transfer.reversed" | "transfer.queued" | "transfer.processing";
@@ -15,6 +15,7 @@ export class SellerWithdrawalError extends Error {
 function statusFromPaystack(status: string | undefined): WithdrawalStatus {
   if (status === "success") return "SUCCESS";
   if (status === "failed") return "FAILED";
+  if (status === "reversed") return "REVERSED";
   return status === "otp" ? "REVIEW_REQUIRED" : "PROCESSING";
 }
 
@@ -202,6 +203,73 @@ export async function withdrawSellerEarnings(sellerId: string, amountKobo: numbe
     });
   }
 
+  return prisma.sellerWithdrawal.findUniqueOrThrow({
+    where: { id: withdrawal.id },
+    select: { id: true, status: true, amountKobo: true, updatedAt: true, completedAt: true },
+  });
+}
+
+export async function reconcileSellerWithdrawal(withdrawalId: string, sellerId: string) {
+  const withdrawal = await prisma.sellerWithdrawal.findFirst({
+    where: { id: withdrawalId, sellerId },
+    select: {
+      id: true,
+      status: true,
+      transferReference: true,
+      transferCode: true,
+      amountKobo: true,
+    },
+  });
+  if (!withdrawal) throw new SellerWithdrawalError("Withdrawal not found.", 404);
+  if (withdrawal.status !== "PROCESSING" && withdrawal.status !== "REVIEW_REQUIRED") {
+    throw new SellerWithdrawalError("This withdrawal does not currently need a Paystack status check.", 409);
+  }
+
+  let transfer: Awaited<ReturnType<typeof verifySellerTransfer>>;
+  try {
+    transfer = await verifySellerTransfer(withdrawal.transferReference);
+  } catch (error) {
+    const diagnostics = getPaystackErrorDiagnostics(error);
+    console.error("Paystack could not confirm a seller wallet withdrawal status.", {
+      sellerId,
+      withdrawalId,
+      paystackError: diagnostics,
+    });
+    const message = diagnostics.status === 401 || diagnostics.status === 403
+      ? "Paystack rejected the server credentials. Support must check the Paystack account and environment used for this withdrawal."
+      : diagnostics.status === 404
+        ? "Paystack could not find this withdrawal reference. Support must check the Paystack dashboard before any retry."
+        : diagnostics.status === 429
+          ? "Paystack is rate-limiting status checks. Wait a few minutes and check again; do not submit another withdrawal."
+          : diagnostics.status !== undefined && diagnostics.status >= 500
+            ? "Paystack is temporarily unavailable. Wait a few minutes and check again; do not submit another withdrawal."
+            : diagnostics.code === "ECONNABORTED" || diagnostics.code === "ETIMEDOUT"
+              ? "The Paystack status check timed out. Wait a few minutes and check again; do not submit another withdrawal."
+              : diagnostics.status === undefined
+                ? "The server could not reach Paystack to check this withdrawal. Contact support; do not submit another withdrawal."
+                : `Paystack status check failed (HTTP ${diagnostics.status}). Contact support; do not submit another withdrawal.`;
+    throw new SellerWithdrawalError(message, 502);
+  }
+
+  if (typeof transfer.amount === "number" && transfer.amount !== withdrawal.amountKobo) {
+    console.error("Paystack transfer amount does not match the seller wallet withdrawal.", {
+      sellerId,
+      withdrawalId,
+      recordedAmountKobo: withdrawal.amountKobo,
+      verifiedAmountKobo: transfer.amount,
+    });
+    throw new SellerWithdrawalError("Paystack returned a transfer amount that does not match this withdrawal. Contact support; do not withdraw again.", 409);
+  }
+
+  const status = statusFromPaystack(transfer.status);
+  await updateWithdrawalStatus(withdrawal.id, status, {
+    transferCode: transfer.transfer_code ?? withdrawal.transferCode,
+    failureReason: status === "FAILED"
+      ? "PAYSTACK_TRANSFER_FAILED"
+      : status === "REVIEW_REQUIRED"
+        ? "PAYSTACK_TRANSFER_REQUIRES_ACTION"
+        : null,
+  });
   return prisma.sellerWithdrawal.findUniqueOrThrow({
     where: { id: withdrawal.id },
     select: { id: true, status: true, amountKobo: true, updatedAt: true, completedAt: true },
