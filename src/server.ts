@@ -20,6 +20,7 @@ import scoutRouter from "./routes/scout.js";
 import walletRouter from "./routes/wallet.js";
 import { getPaystackSecretKey } from "./services/paystack.js";
 import { processDueSniperBids } from "./services/autoBidding.js";
+import { reconcilePendingPaystackReferences } from "./scripts/reconcilePendingPaystackPayments.js";
 
 const requiredEnvironment = ["SUPABASE_URL"];
 if (!process.env.DATABASE_URL && !process.env.DIRECT_URL) {
@@ -114,11 +115,19 @@ app.use((request, response) => {
 void Promise.all([finalizeExpiredAuctions(), finalizeUnpaidAuctionWins(), processDueSniperBids()]).catch((error: unknown) => {
   console.error("Failed to run auction maintenance workers during startup.", error);
 });
+void reconcilePendingPaystackReferences().catch((error: unknown) => {
+  console.error("Failed to reconcile pending Paystack references during startup.", error);
+});
 const auctionFinalizationTimer = setInterval(() => {
   void Promise.all([finalizeExpiredAuctions(), finalizeUnpaidAuctionWins(), processDueSniperBids()]).catch((error: unknown) => {
     console.error("Failed to run auction maintenance workers.", error);
   });
 }, 5_000);
+const paystackReconciliationTimer = setInterval(() => {
+  void reconcilePendingPaystackReferences().catch((error: unknown) => {
+    console.error("Failed to reconcile pending Paystack references.", error);
+  });
+}, 5 * 60_000);
 
 app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => {
   const requestId = typeof response.locals.requestId === "string" ? response.locals.requestId : randomUUID();
@@ -181,6 +190,7 @@ const server = app.listen(port, () => console.log(`Quick Resell API listening on
 
 async function shutdown() {
   clearInterval(auctionFinalizationTimer);
+  clearInterval(paystackReconciliationTimer);
   server.close();
   await prisma.$disconnect();
 }

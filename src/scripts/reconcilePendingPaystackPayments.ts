@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import { prisma } from "../lib/prisma.js";
 import { finalizeCartCheckout } from "../services/cartCheckout.js";
 import { verifyPaystackTransaction } from "../services/paystack.js";
@@ -10,7 +11,7 @@ type ReconciliationEntry = {
   userId?: string;
 };
 
-async function main() {
+export async function reconcilePendingPaystackReferences(): Promise<{ processed: number; verified: number; skipped: number }> {
   const queue = new Map<string, ReconciliationEntry>();
 
   const walletTransactions = await prisma.walletTransaction.findMany({
@@ -53,7 +54,7 @@ async function main() {
   console.log(`Checking ${entries.length} stored Paystack references...`);
 
   let processed = 0;
-  let matched = 0;
+  let verified = 0;
   let skipped = 0;
 
   for (const entry of entries) {
@@ -61,6 +62,7 @@ async function main() {
       const payment = await verifyPaystackTransaction(entry.reference);
       if (payment.status !== "success" || payment.reference !== entry.reference || payment.currency !== "NGN") {
         console.log(`Skipping not-successful reference ${entry.reference}`);
+        processed += 1;
         skipped += 1;
         continue;
       }
@@ -68,6 +70,7 @@ async function main() {
       if (entry.type === "wallet") {
         if (!entry.userId) {
           console.warn(`Missing userId for wallet reference ${entry.reference}`);
+          processed += 1;
           skipped += 1;
           continue;
         }
@@ -75,6 +78,7 @@ async function main() {
       } else {
         if (!entry.buyerId) {
           console.warn(`Missing buyerId for order reference ${entry.reference}`);
+          processed += 1;
           skipped += 1;
           continue;
         }
@@ -82,7 +86,7 @@ async function main() {
       }
 
       processed += 1;
-      matched += 1;
+      verified += 1;
       console.log(`Verified and applied ${entry.reference}`);
     } catch (error) {
       processed += 1;
@@ -91,10 +95,17 @@ async function main() {
     }
   }
 
-  console.log(`Batch reconciliation complete. Verified: ${matched}, skipped: ${skipped}.`);
+  console.log(`Batch reconciliation complete. Verified: ${verified}, skipped: ${skipped}.`);
+  return { processed, verified, skipped };
 }
 
-main().catch((error) => {
-  console.error("Batch Paystack reconciliation failed:", error);
-  process.exitCode = 1;
-});
+async function main() {
+  await reconcilePendingPaystackReferences();
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error("Batch Paystack reconciliation failed:", error);
+    process.exitCode = 1;
+  });
+}

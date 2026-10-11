@@ -236,11 +236,12 @@ router.get("/payments/verify/:reference", async (request, response) => {
       return;
     }
 
+    const amountKobo = paidAmount;
     response.json({
       verified: true,
       status: data.status,
       reference: data.reference,
-      amount: data.amount / 100,
+      amount: amountKobo / 100,
       currency: data.currency,
       metadata: data.metadata ?? {},
     });

@@ -80,9 +80,10 @@ export async function verifyCartPayment(reference: string, buyerId: string): Pro
 
   const paidAtValue = transaction.paid_at;
   const paidAt = typeof paidAtValue === "string" ? new Date(paidAtValue) : null;
+  const normalizedLegacySubtotalUsdCents: number | null = legacyCurrency ? (legacySubtotalUsdCents ?? null) : null;
   return {
     subtotalCents,
-    legacySubtotalUsdCents: legacyCurrency ? legacySubtotalUsdCents : null,
+    legacySubtotalUsdCents: normalizedLegacySubtotalUsdCents,
     cartItemIds,
     paidAt: paidAt && Number.isFinite(paidAt.getTime()) ? paidAt : null,
     legacyCurrency,
