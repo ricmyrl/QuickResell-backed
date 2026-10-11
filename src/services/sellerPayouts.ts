@@ -1,5 +1,5 @@
 import { prisma } from "../lib/prisma.js";
-import { getPaystackErrorDiagnostics, initiateSellerPayout, verifySellerTransfer } from "./paystack.js";
+import { getPaystackErrorDiagnostics, initiateSellerPayout, reconcileSellerTransfer } from "./paystack.js";
 
 export type PayoutNotificationStatus = "BLOCKED" | "SUCCESS" | "FAILED" | "REVERSED" | "REVIEW_REQUIRED";
 
@@ -302,9 +302,9 @@ export async function reconcileSellerPayout(itemId: string, sellerId: string) {
     throw new SellerCashoutError("This payout does not currently need a Paystack status check.", 409);
   }
 
-  let transfer: Awaited<ReturnType<typeof verifySellerTransfer>>;
+  let transfer: Awaited<ReturnType<typeof reconcileSellerTransfer>>;
   try {
-    transfer = await verifySellerTransfer(payout.transferReference);
+    transfer = await reconcileSellerTransfer(payout.transferReference, payout.transferCode);
   } catch (error) {
     console.error("Paystack could not confirm a seller payout status.", {
       sellerId,

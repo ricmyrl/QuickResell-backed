@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
-import { getPaystackErrorDiagnostics, initiateSellerPayout, verifySellerTransfer } from "./paystack.js";
+import { getPaystackErrorDiagnostics, initiateSellerPayout, reconcileSellerTransfer } from "./paystack.js";
 
 type WithdrawalStatus = "PROCESSING" | "SUCCESS" | "FAILED" | "REVERSED" | "REVIEW_REQUIRED";
 type TransferEvent = "transfer.success" | "transfer.failed" | "transfer.reversed" | "transfer.queued" | "transfer.processing";
@@ -225,9 +225,9 @@ export async function reconcileSellerWithdrawal(withdrawalId: string, sellerId: 
     throw new SellerWithdrawalError("This withdrawal does not currently need a Paystack status check.", 409);
   }
 
-  let transfer: Awaited<ReturnType<typeof verifySellerTransfer>>;
+  let transfer: Awaited<ReturnType<typeof reconcileSellerTransfer>>;
   try {
-    transfer = await verifySellerTransfer(withdrawal.transferReference);
+    transfer = await reconcileSellerTransfer(withdrawal.transferReference, withdrawal.transferCode);
   } catch (error) {
     const diagnostics = getPaystackErrorDiagnostics(error);
     console.error("Paystack could not confirm a seller wallet withdrawal status.", {
