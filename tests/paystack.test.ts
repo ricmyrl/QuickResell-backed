@@ -138,4 +138,5 @@ test("Paystack charges may exceed the expected order total when fees are include
   assert.equal(hasPaystackChargeAtLeast(30613, 30613), true);
   assert.equal(hasPaystackChargeAtLeast(30613, 30650), true);
   assert.equal(hasPaystackChargeAtLeast(30613, 30000), false);
+  assert.equal(hasPaystackChargeAtLeast(2500, 2550), true);
 });
