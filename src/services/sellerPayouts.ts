@@ -1,5 +1,5 @@
 import { prisma } from "../lib/prisma.js";
-import { initiateSellerPayout } from "./paystack.js";
+import { initiateSellerPayout, verifySellerTransfer } from "./paystack.js";
 
 export type PayoutNotificationStatus = "BLOCKED" | "SUCCESS" | "FAILED" | "REVERSED" | "REVIEW_REQUIRED";
 
@@ -43,9 +43,10 @@ export function getSellerPayoutNotification(
   return messages[status];
 }
 
-function statusFromPaystack(status: string | undefined): "PROCESSING" | "SUCCESS" | "FAILED" | "REVIEW_REQUIRED" {
+function statusFromPaystack(status: string | undefined): "PROCESSING" | "SUCCESS" | "FAILED" | "REVERSED" | "REVIEW_REQUIRED" {
   if (status === "success") return "SUCCESS";
   if (status === "failed") return "FAILED";
+  if (status === "reversed") return "REVERSED";
   if (status === "otp") return "REVIEW_REQUIRED";
   return "PROCESSING";
 }
@@ -93,6 +94,31 @@ async function updatePayoutStatus(
           entityId: payout.id,
         },
       });
+    }
+    if (status === "FAILED" || status === "REVERSED") {
+      const cashoutTransaction = await transaction.walletTransaction.findUnique({
+        where: { paymentReference: `QR-CASHOUT-${payout.id}` },
+        select: { id: true, status: true, amountCents: true },
+      });
+      if (cashoutTransaction?.status === "COMPLETED") {
+        const refundableAmount = payout.amountKobo ?? data.amountKobo ?? cashoutTransaction.amountCents;
+        if (!Number.isSafeInteger(refundableAmount) || refundableAmount <= 0) {
+          throw new Error(`Seller payout ${payout.id} has an invalid refundable amount.`);
+        }
+        const wallet = await transaction.wallet.findUnique({
+          where: { userId: payout.sellerId },
+          select: { id: true },
+        });
+        if (!wallet) throw new Error(`Seller wallet is missing for payout ${payout.id}.`);
+        await transaction.wallet.update({
+          where: { id: wallet.id },
+          data: { balanceCents: { increment: refundableAmount } },
+        });
+        await transaction.walletTransaction.updateMany({
+          where: { id: cashoutTransaction.id, status: "COMPLETED" },
+          data: { status: "FAILED" },
+        });
+      }
     }
     return true;
   });
@@ -252,6 +278,63 @@ export async function cashOutSellerOrderItem(itemId: string, sellerId: string) {
     });
   }
 
+  return prisma.sellerPayout.findUniqueOrThrow({
+    where: { id: payout.id },
+    select: { id: true, status: true, amountKobo: true, updatedAt: true, completedAt: true },
+  });
+}
+
+export async function reconcileSellerPayout(itemId: string, sellerId: string) {
+  const item = await prisma.purchaseOrderItem.findFirst({
+    where: { id: itemId, sellerId },
+    select: {
+      sellerPayout: {
+        select: { id: true, status: true, transferReference: true, transferCode: true, amountKobo: true },
+      },
+    },
+  });
+  const payout = item?.sellerPayout;
+  if (!payout) throw new SellerCashoutError("This order has no tracked Paystack payout to reconcile.", 409);
+  if (!payout.transferReference) {
+    throw new SellerCashoutError("This payout has no Paystack reference. Contact support before taking further action.", 409);
+  }
+  if (payout.status !== "REVIEW_REQUIRED" && payout.status !== "PROCESSING") {
+    throw new SellerCashoutError("This payout does not currently need a Paystack status check.", 409);
+  }
+
+  let transfer: Awaited<ReturnType<typeof verifySellerTransfer>>;
+  try {
+    transfer = await verifySellerTransfer(payout.transferReference);
+  } catch (error) {
+    console.error("Paystack could not confirm a seller payout status.", {
+      sellerId,
+      orderItemId: itemId,
+      transferReference: payout.transferReference,
+      error,
+    });
+    throw new SellerCashoutError("Paystack could not confirm this transfer yet. Try checking again later; do not submit another cash-out.", 502);
+  }
+  if (typeof transfer.amount === "number" && payout.amountKobo !== null && transfer.amount !== payout.amountKobo) {
+    console.error("Paystack transfer amount does not match the recorded seller payout.", {
+      sellerId,
+      orderItemId: itemId,
+      transferReference: payout.transferReference,
+      recordedAmountKobo: payout.amountKobo,
+      verifiedAmountKobo: transfer.amount,
+    });
+    throw new SellerCashoutError("Paystack returned a transfer amount that does not match this payout. Contact support; do not cash out again.", 409);
+  }
+
+  const status = statusFromPaystack(transfer.status);
+  await updatePayoutStatus(payout.id, status, {
+    amountKobo: payout.amountKobo ?? undefined,
+    transferCode: transfer.transfer_code ?? payout.transferCode,
+    failureReason: status === "FAILED"
+      ? "PAYSTACK_TRANSFER_FAILED"
+      : status === "REVIEW_REQUIRED"
+        ? "PAYSTACK_TRANSFER_REQUIRES_ACTION"
+        : null,
+  });
   return prisma.sellerPayout.findUniqueOrThrow({
     where: { id: payout.id },
     select: { id: true, status: true, amountKobo: true, updatedAt: true, completedAt: true },

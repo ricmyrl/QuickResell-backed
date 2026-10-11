@@ -133,6 +133,32 @@ export async function initiateSellerPayout({
   return transfer;
 }
 
+export async function verifySellerTransfer(reference: string): Promise<{ reference: string; transfer_code?: string; status: string; amount?: number }> {
+  const response = await axios.get<{
+    data?: { reference?: string; transfer_code?: string; status?: string; amount?: number }
+  }>(
+    `https://api.paystack.co/transfer/verify/${encodeURIComponent(reference)}`,
+    {
+      headers: {
+        Authorization: `Bearer ${getPaystackSecretKey()}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 15_000,
+    },
+  );
+
+  const transfer = response.data?.data;
+  if (!transfer || transfer.reference !== reference || typeof transfer.status !== "string") {
+    throw new Error("Paystack did not return a matching transfer status.");
+  }
+  return {
+    reference,
+    status: transfer.status,
+    transfer_code: transfer.transfer_code,
+    amount: transfer.amount,
+  };
+}
+
 export function getPaystackSecretKey(environment: NodeJS.ProcessEnv = process.env): string {
   const secretKey = environment.PAYSTACK_SECRET_KEY?.trim();
   if (!secretKey) throw new Error("PAYSTACK_SECRET_KEY is not configured.");

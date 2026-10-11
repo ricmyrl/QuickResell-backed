@@ -2,7 +2,7 @@ import { Router, type Request } from "express";
 import type { User } from "../generated/prisma/client.js";
 import { requireConfirmedEmail, requirePasskeyVerification, requireSupabaseUser, type AuthenticatedRequest } from "../middleware/requireSupabaseUser.js";
 import { prisma } from "../lib/prisma.js";
-import { cashOutSellerOrderItem, SellerCashoutError } from "../services/sellerPayouts.js";
+import { cashOutSellerOrderItem, reconcileSellerPayout, SellerCashoutError } from "../services/sellerPayouts.js";
 
 const router = Router();
 const fulfillmentMethods = ["PICKUP", "SHIPPING"] as const;
@@ -131,6 +131,33 @@ router.post("/seller/orders/:itemId/cashout", requireConfirmedEmail, requirePass
   }
   try {
     const payout = await cashOutSellerOrderItem(itemId, seller.id);
+    response.json({
+      payout: {
+        id: payout.id,
+        status: payout.status,
+        amountKobo: payout.amountKobo,
+        updatedAt: payout.updatedAt,
+        completedAt: payout.completedAt,
+      },
+    });
+  } catch (error) {
+    if (error instanceof SellerCashoutError) {
+      response.status(error.status).json({ error: error.message });
+      return;
+    }
+    throw error;
+  }
+});
+
+router.post("/seller/orders/:itemId/reconcile", requireConfirmedEmail, async (request, response) => {
+  const seller = currentUser(request);
+  const itemId = request.params.itemId;
+  if (typeof itemId !== "string" || !itemId.trim()) {
+    response.status(400).json({ error: "A valid order item ID is required." });
+    return;
+  }
+  try {
+    const payout = await reconcileSellerPayout(itemId, seller.id);
     response.json({
       payout: {
         id: payout.id,
