@@ -111,8 +111,12 @@ router.get("/wallet", async (request, response) => {
           FROM "SellerWithdrawalAllocation" allocation
           INNER JOIN "SellerWithdrawal" withdrawal ON withdrawal."id" = allocation."withdrawalId"
           INNER JOIN "SellerPayout" allocated_payout ON allocated_payout."id" = allocation."sellerPayoutId"
-          WHERE allocated_payout."orderItemId" = item."id"
+          INNER JOIN "PurchaseOrderItem" allocated_item ON allocated_item."id" = allocated_payout."orderItemId"
+          INNER JOIN "PurchaseOrder" allocated_order ON allocated_order."id" = allocated_item."orderId"
+          WHERE allocated_payout."sellerId" = ${user.id}::uuid
             AND withdrawal."status" = 'SUCCESS'
+            AND allocated_order."paymentReference" IS NOT NULL
+            AND allocated_order."status" <> 'CANCELLED'
         ), 0)::bigint AS "paidOutCents"
       FROM "PurchaseOrderItem" item
       INNER JOIN "PurchaseOrder" orders ON orders."id" = item."orderId"
